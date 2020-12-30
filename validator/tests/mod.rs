@@ -90,6 +90,7 @@ async fn mock_validators(hub: &mut MockHub, num_validators: usize) -> Vec<Valida
     let mut validators = vec![];
     let mut consensus = vec![];
     for (id, key) in keys.into_iter().enumerate() {
+        log::debug!("creating validators #{}", id);
         let (v, c) = mock_validator(hub, id as u64, key, genesis.clone()).await;
         validators.push(v);
         consensus.push(c);
@@ -106,6 +107,8 @@ async fn mock_validators(hub: &mut MockHub, num_validators: usize) -> Vec<Valida
                 .dial_mock(&other_validator.consensus.network);
         }
     }
+
+    log::debug!("Waiting for validators to connect");
 
     // Wait until validators are connected.
     let mut events: Vec<broadcast::Receiver<ConsensusEvent<MockNetwork>>> =
@@ -140,6 +143,7 @@ fn validator_for_slot(
 
 #[tokio::test]
 async fn one_validator_can_create_micro_blocks() {
+    simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Trace).init().unwrap();
     let mut hub = MockHub::default();
 
     let key = KeyPair::generate(&mut seeded_rng(0));
@@ -169,8 +173,9 @@ async fn one_validator_can_create_micro_blocks() {
 
 #[tokio::test]
 async fn four_validators_can_create_micro_blocks() {
-    let mut hub = MockHub::default();
+    simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).init().unwrap();
 
+    let mut hub = MockHub::default();
     let validators = mock_validators(&mut hub, 4).await;
 
     let blockchain = Arc::clone(&validators.first().unwrap().consensus.blockchain);
@@ -185,7 +190,7 @@ async fn four_validators_can_create_micro_blocks() {
     .await
     .unwrap();
 
-    assert!(blockchain.block_number() >= 30);
+    assert!(blockchain.block_number() >= 128);
 }
 
 #[tokio::test]

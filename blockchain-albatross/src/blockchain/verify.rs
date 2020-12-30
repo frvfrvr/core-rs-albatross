@@ -274,6 +274,7 @@ impl Blockchain {
         trace!("Accounts hash:    {}", accounts_hash);
 
         if block.state_root() != &accounts_hash {
+            error!("State: expected {:?}, found {:?}", block.state_root(), accounts_hash);
             return Err(PushError::InvalidBlock(BlockError::AccountsHashMismatch));
         }
 
@@ -337,6 +338,11 @@ impl Blockchain {
                     disabled_set: real_disabled_slots,
                     history_root: real_history_root,
                 };
+
+                if macro_block.is_election_block() {
+                    debug!("Received Election block: body_hash: {:?}, header.body_hash: {:?}", &real_body.hash::<Blake2bHash>(), &macro_block.header.body_root);
+                }
+
 
                 if real_body.hash::<Blake2bHash>() != macro_block.header.body_root {
                     warn!("Rejecting block - Header body hash doesn't match real body hash");

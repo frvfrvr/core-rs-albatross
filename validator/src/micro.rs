@@ -71,7 +71,7 @@ impl<TValidatorNetwork: ValidatorNetwork + 'static> NextProduceMicroBlockEvent<T
 
     async fn next(mut self) -> (ProduceMicroBlockEvent, NextProduceMicroBlockEvent<TValidatorNetwork>) {
         let event = if self.is_our_turn() {
-            info!("Our turn at #{}:{}, producing micro block", self.block_number, self.view_number);
+            info!("Validator {}: Our turn at #{}:{}, producing micro block", self.validator_id, self.block_number, self.view_number);
             ProduceMicroBlockEvent::MicroBlock(self.produce_micro_block())
         } else {
             debug!("Not our turn at #{}:{}, waiting for micro block", self.block_number, self.view_number);

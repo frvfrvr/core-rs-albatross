@@ -16,10 +16,10 @@ pub const SLOTS: u16 = 512;
 pub const TWO_THIRD_SLOTS: u16 = (2 * SLOTS + 3 - 1) / 3;
 
 /// Length of a batch including the macro block
-pub const BATCH_LENGTH: u32 = 32; // TODO Set
+pub const BATCH_LENGTH: u32 = 8; // TODO Set
 
 /// How many batches constitute an epoch
-pub const BATCHES_PER_EPOCH: u32 = 4; // TODO Set
+pub const BATCHES_PER_EPOCH: u32 = 2; // TODO Set
 
 /// Length of epoch including election macro block
 pub const EPOCH_LENGTH: u32 = BATCH_LENGTH * BATCHES_PER_EPOCH;
@@ -30,7 +30,7 @@ pub const TIMESTAMP_MAX_DRIFT: u64 = 600000;
 
 /// Tendermint's initial timeout, in milliseconds.
 /// See https://arxiv.org/abs/1807.04938v3 for more information.
-pub const TENDERMINT_TIMEOUT_INIT: u64 = 1000; // TODO: Set
+pub const TENDERMINT_TIMEOUT_INIT: u64 = 2000; // TODO: Set
 
 /// Tendermint's timeout delta, in milliseconds.
 /// See https://arxiv.org/abs/1807.04938v3 for more information.

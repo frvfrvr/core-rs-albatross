@@ -105,6 +105,10 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
             self.block_producer
                 .next_macro_block_proposal(self.offset_time.now(), round, vec![]);
 
+        if block.is_election_block() {
+            debug!("Proposing Election block: hash: {:?}, header_hash: {:?}", &block.body.clone().unwrap().hash::<Blake2bHash>(), &block.header.body_root);
+        }
+
         // Cache the block body for future use.
         self.cache_body = block.body;
 
@@ -219,6 +223,7 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
             .get_band_number_by_slot_number(slot_number)
             .ok_or(TendermintError::CannotReceiveProposal)?;
 
+
         // Get the validator key.
         let validator_key = *slot.public_key().uncompress_unchecked();
 
@@ -227,6 +232,7 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
             TENDERMINT_TIMEOUT_INIT + round as u64 * TENDERMINT_TIMEOUT_DELTA,
         );
 
+        debug!("Awaiting proposal for {}.{}, expected producer: {}, timeout: {:?}", self.blockchain.block_number() +1, &round, &validator_id, &timeout);
         // This waits for a proposal from the proposer until it timeouts.
         let await_res = tokio::time::timeout(
             timeout,
@@ -237,8 +243,8 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
         // Unwrap our await result. If we timed out, we return a proposal timeout right here.
         let proposal = match await_res {
             Ok(v) => v,
-            Err(_) => {
-                debug!("Tendermint - await_proposal: Timed out");
+            Err(err) => {
+                debug!("Tendermint - await_proposal: Timed out: {:?}", err);
                 return Ok(ProposalResult::Timeout);
             }
         };
@@ -254,7 +260,7 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
             .verify_block_header(&BlockHeader::Macro(header.clone()), &validator_key, None)
             .is_err()
         {
-            debug!("Tendermint - await_proposal: Invalid block header");
+            error!("Tendermint - await_proposal: Invalid block header");
             return Ok(ProposalResult::Timeout);
         }
 
@@ -271,6 +277,8 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
             justification: None,
         });
 
+        let view_number = self.blockchain.head().next_view_number();
+
         // Update our blockchain state using the received proposal. If we can't update the state, we
         // return a proposal timeout right here.
         if self
@@ -285,10 +293,10 @@ impl<N: ValidatorNetwork + 'static> TendermintOutsideDeps for TendermintInterfac
         // Check the validity of the block against our state. If it is invalid, we return a proposal
         // timeout right here. This also returns the block body that matches the block header
         // (assuming that the block is valid).
-        let body = match self.blockchain.verify_block_state(&state, &block, None) {
+        let body = match self.blockchain.verify_block_state(&state, &block, Some(&mut txn)) {
             Ok(v) => v,
-            Err(_) => {
-                debug!("Tendermint - await_proposal: Invalid block state");
+            Err(err) => {
+                error!("Tendermint - await_proposal: Invalid block state: {:?}", err);
                 return Ok(ProposalResult::Timeout);
             }
         };
@@ -348,10 +356,15 @@ impl<N: ValidatorNetwork + 'static> TendermintInterface<N> {
         while let Some((msg, _)) = self.proposal_stream.as_mut().unwrap().next().await {
             // Check if the proposal comes from the correct validator and the signature of the
             // proposal is valid. If not, keep awaiting.
-            if validator_id == msg.signer_idx && msg.verify(&validator_key) {
-                return msg.message;
+            trace!("Received Proposal from {}", &msg.signer_idx);
+            if validator_id == msg.signer_idx {
+                if msg.verify(&validator_key) {
+                    return msg.message;
+                } else {
+                    debug!("Tendermint - await_proposal: Invalid signature");
+                }
             } else {
-                error!("Tendermint - await_proposal: Invalid validator id or signature");
+                debug!("Tendermint - await_proposal: Invalid validator id. Expected {}, found {}", validator_id, msg.signer_idx);
             }
         }
 

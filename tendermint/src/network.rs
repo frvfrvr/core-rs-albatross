@@ -44,6 +44,7 @@ impl<
             }
             // If we timed out, we set Tendermint's state to OnTimeoutPropose.
             ProposalResult::Timeout => {
+                log::debug!("timeout in network.rs");
                 self.state.current_checkpoint = Checkpoint::OnTimeoutPropose;
             }
         }
