@@ -68,6 +68,7 @@ impl ClientInner {
 
         // Initialize clock
         let time = Arc::new(OffsetTime::new());
+        log::info!("Offset Time: {:?}", &time);
 
         // Load identity keypair from file store
         let identity_keypair = config.storage.identity_keypair()?;

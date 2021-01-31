@@ -341,8 +341,8 @@ impl StorageConfig {
                         secret_key.into()
                     }
                     else {
-                        //BlsKeyPair::generate_default_csprng()
-                        todo!("Load hex string");
+                        BlsKeyPair::generate_default_csprng()
+                        // todo!("Load hex string");
                     }
                 })?
             }

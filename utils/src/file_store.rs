@@ -22,8 +22,11 @@ impl FileStore {
     pub fn load<T: Deserialize>(&self) -> Result<T, Error> {
         log::debug!("Reading from: {}", self.path.display());
         let file = OpenOptions::new().read(true).open(&self.path)?;
+        log::debug!("File: {:?}", &file);
         let mut buf_reader = BufReader::new(file);
+        log::debug!("reader: {:?}", &buf_reader);
         let item = Deserialize::deserialize(&mut buf_reader)?;
+        log::debug!("Done deserializing");
         Ok(item)
     }
 

@@ -350,7 +350,7 @@ impl ProtocolsHandler for DiscoveryHandler {
                                     }
 
                                     // Update our own peer contact given the observed addresses we received
-                                    peer_contact_book.self_add_addresses(observed_addresses.clone());
+                                    // peer_contact_book.self_add_addresses(observed_addresses.clone());
 
                                     // Send the HandshakeAck
                                     let response_signature = self.keypair.tagged_sign(&challenge_nonce);

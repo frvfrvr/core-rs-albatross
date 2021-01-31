@@ -24,17 +24,22 @@ function optional () {
     fi
 }
 
-optional peer-key-file PEER_KEY_FILE string
-
 echo '[network]'
-required host NIMIQ_HOST string
-entry port 8443 number
-optional instant_inbound NIMIQ_INSTANT_INBOUND boolean
+required min_peers NIMIQ_MIN_PEERS number
+required peer_key_file NIMIQ_PEER_KEY_FILE string
+
+echo "listen_addresses = ["
+addr=($LISTEN_ADDRESSES)
+for node in "${addr[@]}"; do
+    echo "\"$node\""
+done
+echo "]"
+
 
 nodes_arr=($NIMIQ_SEED_NODES)
 for node in "${nodes_arr[@]}"; do
     echo "[[network.seed_nodes]]"
-    echo "uri = \"$node\""
+    echo "address = \"$node\""
 done
 if [[ ! -z "$NIMIQ_SEED_LIST" ]]; then
     echo "[[network.seed_nodes]]"
@@ -62,7 +67,8 @@ optional statistics NIMIQ_LOG_STATISTICS number
 optional file NIMIQ_LOG_FILE string
 
 echo '[validator]'
-optional key_file VALIDATOR_KEY_FILE string
+optional validator_key_file VALIDATOR_KEY_FILE string
+optional validator_key VALIDATOR_KEY string
 
 if [[ "$RPC_ENABLED" == "true" ]]; then
     echo '[rpc-server]'
