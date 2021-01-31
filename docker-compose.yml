@@ -34,9 +34,9 @@ services:
     environment:
       - LISTEN_ADDRESSES=/ip4/7.0.0.2/tcp/8443/ws
       - NIMIQ_HOST=seed1.${NETWORK_NAME:?err}
-      - NIMIQ_NETWORK_ID=dev-albatross
+      - NIMIQ_NETWORK=dev-albatross
       - NIMIQ_PEER_KEY=fe3b33ed720a5d532e27551c3b9aa83d97a27e82c30d87fe1378936890f81ea6
-      - NIMIQ_PEER_KEY_FILE=/root/.nimiq/peer_key.dat
+      - NIMIQ_PEER_KEY_FILE=/home/nimiq/.nimiq/peer_key.dat
       - NIMIQ_INSTANT_INBOUND=true
       - NIMIQ_VALIDATOR=validator
       - NIMIQ_NO_LMDB_SYNC=true
@@ -53,7 +53,7 @@ services:
       devnet:
         ipv4_address: 7.0.0.2
     volumes:
-      - "seed1:/root/.nimiq/:rw"
+      - "seed1:/home/nimiq/.nimiq/:rw"
 
   seed2:
     image: core:latest
@@ -68,7 +68,7 @@ services:
       - NIMIQ_SEED_NODES=/ip4/7.0.0.2/tcp/8443/ws
       # - NIMIQ_SEED_NODES=ws://seed1.${NETWORK_NAME:?err}:8443/5af4c3f30998573e8d3476cd0e0543bf7adba576ef321342e41c2bccc246c377
       - NIMIQ_PEER_KEY=3a55f2b5f7c66a4ce624c8189bb7d6217384ae67c4728591d5458beaab1b226a
-      - NIMIQ_PEER_KEY_FILE=/root/.nimiq/peer_key.dat
+      - NIMIQ_PEER_KEY_FILE=/home/nimiq/.nimiq/peer_key.dat
       - NIMIQ_INSTANT_INBOUND=true
       - NIMIQ_VALIDATOR=validator
       - NIMIQ_NO_LMDB_SYNC=true
@@ -83,7 +83,7 @@ services:
       devnet:
         ipv4_address: 7.0.0.3
     volumes:
-      - "seed2:/root/.nimiq/:rw"
+      - "seed2:/home/nimiq/.nimiq/:rw"
 
   seed3:
     image: core:latest
@@ -98,7 +98,7 @@ services:
       - NIMIQ_SEED_NODES=/ip4/7.0.0.2/tcp/8443/ws
       # - NIMIQ_SEED_NODES=ws://seed1.${NETWORK_NAME:?err}:8443/5af4c3f30998573e8d3476cd0e0543bf7adba576ef321342e41c2bccc246c377
       # - NIMIQ_PEER_KEY=3a55f2b5f7c66a4ce624c8189bb7d6217384ae67c4728591d5458beaab1b226a
-      - NIMIQ_PEER_KEY_FILE=/root/.nimiq/peer_key.dat
+      - NIMIQ_PEER_KEY_FILE=/home/nimiq/.nimiq/peer_key.dat
       - NIMIQ_INSTANT_INBOUND=true
       - NIMIQ_VALIDATOR=validator
       - NIMIQ_NO_LMDB_SYNC=true
@@ -113,7 +113,7 @@ services:
       devnet:
         ipv4_address: 7.0.0.4
     volumes:
-      - "seed3:/root/.nimiq/:rw"
+      - "seed3:/home/nimiq/.nimiq/:rw"
 
 
   seed4:
@@ -129,7 +129,7 @@ services:
       - NIMIQ_SEED_NODES=/ip4/7.0.0.2/tcp/8443/ws
       # - NIMIQ_SEED_NODES=ws://seed1.${NETWORK_NAME:?err}:8443/5af4c3f30998573e8d3476cd0e0543bf7adba576ef321342e41c2bccc246c377
       # - NIMIQ_PEER_KEY=3a55f2b5f7c66a4ce624c8189bb7d6217384ae67c4728591d5458beaab1b226a
-      - NIMIQ_PEER_KEY_FILE=/root/.nimiq/peer_key.dat
+      - NIMIQ_PEER_KEY_FILE=/home/nimiq/.nimiq/peer_key.dat
       - NIMIQ_INSTANT_INBOUND=true
       - NIMIQ_VALIDATOR=validator
       - NIMIQ_NO_LMDB_SYNC=true
@@ -138,13 +138,13 @@ services:
       - VALIDATOR_KEY=1dc9c8895e16ce1516dc01bc1ed676e5435c6c263e0c2cf9a6683f44f966b6774e8314fd239eb5f6b9090cdbd9d28deb1bc0abdf83eff648cb3ff7667859641f7f422aac3eb1bf5ccaa4ad0a2e443963b4b7ff1424beb4bdc016ee150bb40100
       - RPC_ENABLED=true
       - RUST_BACKTRACE="1"
-      - NIMIQ_LOG_LEVEL=trace
+      - NIMIQ_LOG_LEVEL=debug
       - NIMIQ_LOG_TIMESTAMPS=true
     networks:
       devnet:
         ipv4_address: 7.0.0.5
     volumes:
-      - "seed4:/root/.nimiq/:rw"
+      - "seed4:/home/nimiq/.nimiq/:rw"
 
   # validator1:
   #   image: core

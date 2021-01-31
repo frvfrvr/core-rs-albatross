@@ -53,7 +53,7 @@ echo '[consensus]'
 required network NIMIQ_NETWORK string
 
 echo '[database]'
-entry path "/root/database" string
+entry path "/home/nimiq/database" string
 optional size NIMIQ_DATABASE_SIZE number
 optional max_dbs NIMIQ_MAX_DBS number
 optional no_lmdb_sync NIMIQ_NO_LMDB_SYNC boolean
@@ -62,7 +62,7 @@ echo '[log]'
 optional level NIMIQ_LOG_LEVEL string
 optional timestamps NIMIQ_LOG_TIMESTAMPS boolean
 optional tags NIMIQ_LOG_TAGS object
-entry file /root/nimiq.log.pipe string
+entry file /home/nimiq/nimiq.log.pipe string
 optional statistics NIMIQ_LOG_STATISTICS number
 optional file NIMIQ_LOG_FILE string
 
@@ -75,25 +75,6 @@ if [[ "$RPC_ENABLED" == "true" ]]; then
     entry bind 0.0.0.0 string
     optional username RPC_USERNAME string
     optional password RPC_PASSWORD string
-
-    echo '[ws-rpc-server]'
-    entry bind 0.0.0.0 string
-    entry port 8650 number
-    optional username RPC_USERNAME string
-    optional password RPC_PASSWORD string
-fi
-
-if [[ "$METRICS_ENABLED" == "true" ]]; then
-    echo '[metrics-server]'
-    entry bind 0.0.0.0 string
-    optional password METRICS_PASSWORD string
-fi
-
-if [[ "$REVERSE_PROXY_ENABLED" == "true" ]]; then
-    echo '[reverse-proxy]'
-    required address REVERSE_PROXY_ADDRESS string
-    optional header REVERSE_PROXY_HEADER string
-    optional with_tls_termination REVERSE_PROXY_TLS_TERMINATION bool
 fi
 
 echo '[mempool]'
