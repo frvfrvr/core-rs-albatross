@@ -139,11 +139,15 @@ impl NetworkBehaviour for DiscoveryBehaviour {
     }
 
     fn addresses_of_peer(&mut self, peer_id: &PeerId) -> Vec<Multiaddr> {
-        self.peer_contact_book
+        let addresses = self.peer_contact_book
             .read()
             .get(peer_id)
             .map(|addresses_opt| addresses_opt.addresses().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        log::debug!("addresses_of_peer({}) = {:#?}", peer_id, addresses);
+
+        addresses
     }
 
     fn inject_connected(&mut self, peer_id: &PeerId) {

@@ -46,6 +46,7 @@ pub struct MessageHandler {
 
     peer: Option<Arc<Peer>>,
 
+    // Receives the close reason when `close()` is called on the peer.
     close_rx: Option<oneshot::Receiver<CloseReason>>,
 
     waker: Option<Waker>,
@@ -173,65 +174,45 @@ impl ProtocolsHandler for MessageHandler {
                 return Poll::Ready(event);
             }
 
-            // Check if we're closing this connection
-            if let Some((close_fut, reason)) = &mut self.closing {
-                log::trace!("Polling closing future");
-                match close_fut.poll_unpin(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(_) => {
-                        // Close the handler
-                        log::trace!("Closing MessageHandler.");
-
-                        return Poll::Ready(ProtocolsHandlerEvent::Close(HandlerError::ConnectionClosed { reason: *reason }));
-                    }
-                }
-            }
-
             // Poll the oneshot receiver that signals us when the peer is closed
             if let Some(close_rx) = &mut self.close_rx {
                 match close_rx.poll_unpin(cx) {
                     Poll::Ready(Ok(reason)) => {
                         let peer = self.peer.take().expect("Expected peer");
-
                         log::debug!("MessageHandler: Closing peer: {:?}", peer);
 
-                        self.closing = Some((async move { peer.socket.close().await }.boxed(), reason));
-
-                        continue;
+                        return Poll::Ready(ProtocolsHandlerEvent::Close(HandlerError::ConnectionClosed { reason: reason }));
                     }
                     Poll::Ready(Err(e)) => panic!("close_rx returned error: {}", e), // Channel was closed without message.
                     Poll::Pending => {}
                 }
             }
 
+            // If we have a peer, we need to poll the underlying MessageDispatch
             if let Some(peer) = &self.peer {
                 // Poll the MessageReceiver if an error occured
-                match peer.socket.inbound.poll_error(cx) {
-                    Poll::Ready(Some(e)) => {
-                        // TODO: Check if `e` is actually an EOF and not just another error. And put that error into
-                        //       the `CloseReason`.
-                        log::warn!("Remote closed connection: {}", e);
+                match peer.poll_inbound(cx) {
+                    Poll::Ready(Some(Err(e))) => {
+                        // Socker error
+                        log::error!("{}", e);
+
+                        return Poll::Ready(ProtocolsHandlerEvent::Close(HandlerError::ConnectionClosed {
+                            reason: CloseReason::Error,
+                        }));
+                    },
+
+                    Poll::Ready(None) => {
+                        // The message stream ended.
+                        log::warn!("Remote closed connection");
 
                         return Poll::Ready(ProtocolsHandlerEvent::Close(HandlerError::ConnectionClosed {
                             reason: CloseReason::RemoteClosed,
                         }));
-                    }
+                    },
+
                     _ => {}
                 }
             }
-
-            // If the peer is already available, poll it and return
-            // TODO: Poll the future in the MessageReceiver
-            /*if let Some(peer) = self.peer.as_mut() {
-                match peer.poll(cx) {
-                    Poll::Ready(Ok(())) => unreachable!(),
-                    Poll::Ready(Err(e)) => {
-                        log::error!("Peer future failed: {}", e);
-                        return Poll::Ready(ProtocolsHandlerEvent::Close(e.into()))
-                    },
-                    Poll::Pending => return Poll::Pending,
-                }
-            }*/
 
             // Wait for outbound and inbound to be established and the peer ID to be injected.
             if self.socket.is_none() || self.peer_id.is_none() {

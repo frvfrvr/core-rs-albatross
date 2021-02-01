@@ -1,225 +1,226 @@
-use std::{collections::HashMap, io::Cursor, sync::Arc};
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    task::Waker,
+};
 
 use futures::{
-    channel::{mpsc, oneshot},
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, WriteHalf},
-    lock::Mutex as AsyncMutex,
+    channel::mpsc,
+    io::{AsyncRead, AsyncWrite},
+    stream::{Stream, StreamExt},
+    sink::SinkExt,
     task::{Context, Poll},
-    FutureExt, SinkExt, Stream, StreamExt,
 };
-use parking_lot::Mutex;
+use tokio_util::codec::Framed;
+use bytes::{BytesMut, buf::BufExt};
+use async_stream::stream;
 
-use beserial::SerializingError;
-use nimiq_network_interface::message::{peek_type, read_message, Message};
+use beserial::Deserialize;
 
+use crate::codecs::{
+    typed::{MessageCodec, Error, Message, MessageType},
+    tokio_adapter::TokioAdapter,
+};
+
+/// Message dispatcher for a single socket.
+/// 
+/// This sends messages to the peer and receives messages from the peer.
+/// 
+/// Messages are received by calling `poll_incoming`, which reads messages from the underlying socket and
+/// pushes them into a registered stream. Exactly one stream can be registered per message type. Receiver
+/// streams can be registered by calling `receive`.
+/// 
+/// If no stream is registered for a message type, and a message of that type is received, it will be
+/// buffered, and once a stream is registered it will read the buffered messages first (in order as they were
+/// received).
+/// 
 /// # TODO
-///
-///  - Refactor to not use a spawn to handle the dispatching. Instead just add a poll method and poll it from the
-///    handler.
-///
-pub struct MessageReceiver {
-    channels: Arc<Mutex<HashMap<u64, Option<mpsc::Sender<Vec<u8>>>>>>,
-
-    close_tx: Mutex<Option<oneshot::Sender<()>>>,
-
-    error_rx: Mutex<oneshot::Receiver<SerializingError>>,
-}
-
-impl MessageReceiver {
-    pub fn new<I: AsyncRead + Unpin + Send + Sync + 'static>(inbound: I) -> Self {
-        let channels = Arc::new(Mutex::new(HashMap::new()));
-        let (close_tx, close_rx) = oneshot::channel();
-        let (error_tx, error_rx) = oneshot::channel();
-
-        async_std::task::spawn({
-            let channels = Arc::clone(&channels);
-
-            async move {
-                if let Err(e) = Self::reader(inbound, close_rx, channels).await {
-                    log::warn!("Peer::reader: error: {}", e);
-                    error_tx.send(e).unwrap();
-                }
-            }
-        });
-
-        Self {
-            channels,
-            close_tx: Mutex::new(Some(close_tx)),
-            error_rx: Mutex::new(error_rx),
-        }
-    }
-
-    pub(crate) fn poll_error(&self, cx: &mut Context) -> Poll<Option<SerializingError>> {
-        match self.error_rx.lock().poll_unpin(cx) {
-            Poll::Ready(Ok(e)) => Poll::Ready(Some(e)),
-            Poll::Ready(Err(_)) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    pub fn close(&self) {
-        if let Some(close_tx) = self.close_tx.lock().take() {
-            // TODO: handle error
-            close_tx.send(()).unwrap();
-        } else {
-            log::error!("MessageReceiver::close: Already closed.");
-        }
-    }
-
-    /// Registers a receiver stream for a message type
-    pub fn receive<M: Message>(&self) -> impl Stream<Item = M> {
-        let (tx, rx) = mpsc::channel(16);
-
-        let mut channels = self.channels.lock();
-        if channels.contains_key(&M::TYPE_ID) {
-            panic!("Receiver for type {} already registered.", M::TYPE_ID);
-        }
-        channels.insert(M::TYPE_ID, Some(tx));
-
-        rx.filter_map(|buf| async move {
-            let message = M::deserialize_message(&mut Cursor::new(buf))
-                .map_err(|e| log::error!("MessageReceiver error: {}", e))
-                .ok()?;
-
-            Some(message)
-        })
-    }
-
-    async fn reader<I: AsyncRead + Unpin + Send + Sync + 'static>(
-        mut inbound: I,
-        close_rx: oneshot::Receiver<()>,
-        channels: Arc<Mutex<HashMap<u64, Option<mpsc::Sender<Vec<u8>>>>>>,
-    ) -> Result<(), SerializingError> {
-        let mut close_rx = close_rx.fuse();
-
-        loop {
-            log::trace!("Waiting for incoming message...");
-            let data = futures::select! {
-                result = read_message(&mut inbound).fuse() => {
-                    log::trace!("read_message = {:?}", result);
-                    result?
-                },
-                _ = close_rx => {
-                    log::trace!("Received close event");
-                    break;
-                },
-            };
-
-            let message_type = peek_type(&data)?;
-
-            log::trace!("Receiving message: type={}", message_type);
-            log::trace!("Raw: {:?}", data);
-
-            let mut tx = {
-                let mut channels = channels.lock();
-
-                if let Some(tx_opt) = channels.get_mut(&message_type) {
-                    // This tx should be Some(_) because only this function takes out senders.
-                    tx_opt.take().expect("Expected sender")
-                } else {
-                    log::warn!("No receiver for message type: {}", message_type);
-                    // No receiver for this message type
-                    continue;
-                }
-            };
-
-            // Send data to receiver.
-            if let Err(e) = tx.send(data).await {
-                // An error occured, remove channel.
-                log::error!("Error while receiving data: {}", e);
-
-                channels.lock().remove(&message_type);
-            } else {
-                // Put tx back into Option
-                *channels.lock().get_mut(&message_type).unwrap() = Some(tx);
-            }
-        }
-
-        log::trace!("Message dispatcher task terminated");
-
-        // Remove all channels (i.e. senders, which closes readers too?
-        channels.lock().clear();
-
-        Ok(())
-    }
-}
-
-pub struct MessageSender<O>
-where
-    O: AsyncWrite,
-{
-    outbound: AsyncMutex<Option<O>>,
-}
-
-impl<O> MessageSender<O>
-where
-    O: AsyncWrite + Unpin,
-{
-    pub fn new(outbound: O) -> Self {
-        Self {
-            outbound: AsyncMutex::new(Some(outbound)),
-        }
-    }
-
-    pub async fn close(&self) {
-        log::trace!("Waiting for outbound lock...");
-        let mut outbound = self.outbound.lock().await;
-
-        if let Some(mut outbound) = outbound.take() {
-            log::trace!("Closing outbound...");
-            outbound.close().await.unwrap()
-        } else {
-            log::error!("Outbound already closed.");
-        }
-    }
-
-    pub async fn send<M: Message>(&self, message: &M) -> Result<(), SerializingError> {
-        let mut serialized = Vec::with_capacity(message.serialized_message_size());
-
-        message.serialize_message(&mut serialized)?;
-
-        log::trace!("Sending message: {:?}", serialized);
-
-        let mut outbound = self.outbound.lock().await;
-
-        if let Some(outbound) = outbound.as_mut() {
-            outbound.write_all(&serialized).await?;
-            Ok(())
-        } else {
-            log::error!("Outbound already closed.");
-            Err(SerializingError::IoError(std::io::Error::from(std::io::ErrorKind::NotConnected)))
-        }
-    }
-}
-
+/// 
+///  - Something requires the underlying stream `C` to be be pinned, but I'm not sure what. I think we can
+///    just pin it to the heap - it'll be fine...
+/// 
 pub struct MessageDispatch<C>
 where
-    C: AsyncRead + AsyncWriteExt + Send + Sync,
+    C: AsyncRead + AsyncWrite + Send + Sync,
 {
-    pub inbound: MessageReceiver,
-    pub outbound: MessageSender<WriteHalf<C>>,
+    framed: Pin<Box<Framed<TokioAdapter<C>, MessageCodec>>>,
+
+    /// Channels that receive raw messages for a specific message type.
+    channels: HashMap<MessageType, mpsc::Sender<BytesMut>>,
+
+    /// If we receive messages for which no receiver is registered, we buffer them here.
+    buffers: HashMap<MessageType, Vec<BytesMut>>,
+
+    /// Number of buffered messages. This is used to bound the amount of messages we buffer.
+    num_buffered: usize,
+
+    /// Maximum number of buffered messages.
+    max_buffered: usize,
+
+    /// Waker to wake-up the task once there is space in the buffer again.
+    waker: Option<Waker>,
 }
 
 impl<C> MessageDispatch<C>
 where
-    C: AsyncRead + AsyncWriteExt + Send + Sync + 'static,
+    C: AsyncRead + AsyncWrite + Send + Sync + 'static,
 {
-    pub fn new(socket: C) -> Self {
-        let (reader, writer) = socket.split();
+    ///
+    /// # Arguments
+    /// 
+    ///  - `socket`: The underlying socket
+    ///  - `max_buffered`: Maximum number of buffered messages. Must be at least 1.
+    /// 
+    pub fn new(socket: C, max_buffered: usize) -> Self {
+        // This is to ensure that we can just start processing the message and buffer it the channel
+        // is full.
+        assert!(max_buffered > 0, "Needs at least a buffer size of 1");
 
         Self {
-            inbound: MessageReceiver::new(reader),
-            outbound: MessageSender::new(writer),
+            framed: Box::pin(Framed::new(socket.into(), MessageCodec::default())),
+            channels: HashMap::new(),
+            buffers: HashMap::new(),
+            num_buffered: 0,
+            max_buffered,
+            waker: None,
         }
     }
 
-    pub async fn close(&self) {
-        log::trace!("MessageDispatch::close: Closing outbound");
-        self.outbound.close().await;
+    /// Buffers the message.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the buffer is full (i.e. `num_buffered == max_buffered`). This is called by `poll_inbound`, which makes
+    /// sure that there is space in the buffer.
+    /// 
+    fn put_buffer(&mut self, type_id: MessageType, data: BytesMut) {
+        assert!(self.num_buffered < self.max_buffered, "Buffer is full");
+        
+        self.buffers.entry(type_id)
+            .or_default()
+            .push(data);
+    }
 
-        log::trace!("MessageDispatch::close: Closing inbound");
-        self.inbound.close();
+    /// Process the message, by either sending it (sucessfully) to the receiver, or buffering it.
+    /// This also handles disconnected channels, by removing them.
+    fn process_message(&mut self, type_id: MessageType, data: BytesMut, cx: &mut Context<'_>) {
+        if let Some(tx) = self.channels.get(&type_id) {
+            if let Err(e) = tx.try_send(data) {
+                if e.is_full() {
+                    self.put_buffer(type_id, e.into_inner());
+                }
+                else if e.is_disconnected() {
+                    // The receiver disconnected, so we remove it and buffer the message for the next
+                    // receiver.
+                    self.channels.remove(&type_id);
+                    self.put_buffer(type_id, e.into_inner());
+                }
+                else {
+                    // Sending can only fail if channel is full or disconnected.
+                    unreachable!();
+                }
+            }
+        }
+    }
 
-        log::trace!("MessageDispatch::close: Closed.");
+    /// Polls the inbound socket and either pushes the message to the registered channel, or buffers it.
+    pub fn poll_inbound(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<(), Error>>> {
+        // Make sure we have space for buffering.
+        if self.num_buffered == self.max_buffered {
+            self.waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        // Poll the incoming stream and handle the message
+        match self.framed.poll_next_unpin(cx) {
+            // A message was received. The stream gives us tuples of message type and data (BytesMut)
+            Poll::Ready(Some(Ok((type_id, data)))) => {
+                self.process_message(type_id, data, cx);
+
+                Poll::Ready(Some(Ok(())))
+            }
+
+            // Error while receiving a message. This could be an error from the underlying socket (i.e. an
+            // IO error), or the message was malformed.
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+
+            // End of stream. This will be propagated as error, so 
+            Poll::Ready(None) => Poll::Ready(None),
+
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    /// Send a message to the peer
+    /// 
+    /// # Type Arguments
+    /// 
+    ///  - `M`: The type of the message.
+    /// 
+    /// # Arguments
+    /// 
+    ///  - `message`: Sends the message (with header) to the other peer.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns an error, if the message can't be written to the underlying socket.
+    /// 
+    pub async fn send<M: Message>(&mut self, message: &M) -> Result<(), Error> {
+        self.framed.send(message).await?;
+        Ok(())
+    }
+
+    /// Registers a message receiver for a specific message type (as defined by the implementation `M`).
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if a message receiver for this message type is already registered.
+    /// 
+    /// # TODO
+    /// 
+    /// Why does `M` need to be `Unpin`?
+    /// 
+    pub fn receive<M: Message>(&mut self) -> impl Stream<Item = M> {
+        let type_id = M::TYPE_ID.into();
+
+        if self.channels.contains_key(&type_id) {
+            panic!("Receiver for channel already registered: type_id = {}", type_id);
+        }
+
+        // We don't really need buffering here, since we already have that in the `MessageDispatch`.
+        let (tx, mut rx) = mpsc::channel(0);
+
+        // Get all buffered messages.
+        let buffered = self.buffers.remove(&type_id).unwrap_or_default();
+
+        // Wake up the task, if it was waiting for space in the buffer
+        self.wake();
+
+        // Insert sender into channels
+        self.channels.insert(M::TYPE_ID.into(), tx);
+
+        stream! {
+            // First yield all buffered messages
+            for data in buffered {
+                match Deserialize::deserialize(&mut data.reader()) {
+                    Ok(message) => yield message,
+                    Err(e) => log::error!("Error while deserializing message for receiver: {}", e),
+                }
+            }
+
+            // Then yield the messages that we receive from the dispatch.
+            while let Some(data) = rx.next().await {
+                match Deserialize::deserialize(&mut data.reader()) {
+                    Ok(message) => yield message,
+                    Err(e) => log::error!("Error while deserializing message for receiver: {}", e),
+                }
+            }
+        }
+    }
+
+    fn wake(&mut self) {
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
     }
 }
