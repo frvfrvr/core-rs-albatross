@@ -1,33 +1,67 @@
 use std::{
     hash::{Hash, Hasher},
     pin::Pin,
+    task::{Waker, Context, Poll},
+    sync::Arc,
 };
 
 use async_trait::async_trait;
-use futures::{channel::oneshot, Stream};
+use futures::{channel::oneshot, Stream, StreamExt};
 use libp2p::{swarm::NegotiatedSubstream, PeerId};
 use parking_lot::Mutex;
+use futures::lock::{Mutex as AsyncMutex};
+use async_stream::stream;
 
 use nimiq_network_interface::message::Message;
 use nimiq_network_interface::peer::{CloseReason, Peer as PeerInterface, RequestResponse, SendError};
 
 use super::dispatch::MessageDispatch;
-use crate::network::NetworkError;
+use crate::{
+    network::NetworkError,
+    codecs::typed::Error,
+};
 
 pub struct Peer {
     pub id: PeerId,
 
-    pub(crate) socket: MessageDispatch<NegotiatedSubstream>,
+    pub(crate) dispatch: Arc<AsyncMutex<MessageDispatch<NegotiatedSubstream>>>,
 
+    /// Channel used to pass the close reason the the network handler.
     close_tx: Mutex<Option<oneshot::Sender<CloseReason>>>,
+
+    /// Waker used to wake up the task, that's waiting for the dispatch mutex to `poll_inbound`.
+    /// 
+    /// Note: Is this a good approach?
+    /// 
+    waker_for_dispatch_lock: Mutex<Option<Waker>>,
 }
 
 impl Peer {
-    pub fn new(id: PeerId, socket: MessageDispatch<NegotiatedSubstream>, close_tx: oneshot::Sender<CloseReason>) -> Self {
+    pub fn new(id: PeerId, dispatch: MessageDispatch<NegotiatedSubstream>, close_tx: oneshot::Sender<CloseReason>) -> Self {
         Self {
             id,
-            socket,
+            dispatch: Arc::new(AsyncMutex::new(dispatch)),
             close_tx: Mutex::new(Some(close_tx)),
+            waker_for_dispatch_lock: Mutex::new(None),
+        }
+    }
+
+    /// Polls the underlying dispatch's inbound stream by first trying to acquire the mutex. If it's not availble,
+    /// this will return `Poll::Pending` and make sure that the task is woken up, once the mutex was released.
+    pub(crate) fn poll_inbound(&self, cx: &mut Context<'_>) -> Poll<Option<Result<(), Error>>> {
+        if let Some(dispatch) = self.dispatch.try_lock() {
+            dispatch.poll_inbound(cx)
+        }
+        else {
+            // Lock is currently held by someone else, so we need to come back later.
+            *self.waker_for_dispatch_lock.lock() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    fn wake(&self) {
+        if let Some(waker) = self.waker_for_dispatch_lock.lock().take() {
+            waker.wake();
         }
     }
 }
@@ -70,14 +104,41 @@ impl PeerInterface for Peer {
     }
 
     async fn send<M: Message>(&self, message: &M) -> Result<(), SendError> {
-        Ok(self.socket.outbound.send(message).await?)
+        {
+            // Acquire the mutex and send the message.
+            let dispatch = self.dispatch.lock();
+            dispatch.await.send(message).await?;
+        }
+
+        // We need to wake the polling task up, if it's waiting for the mutex.
+        self.wake();
+
+        Ok(())
     }
 
+    // TODO: Make this a stream of Result<M, Error>
+    //
+    // NOTE: Move new message codec to network-interface
+    //
     fn receive<M: Message>(&self) -> Pin<Box<dyn Stream<Item = M> + Send>> {
-        Box::pin(self.socket.inbound.receive())
+        // The lock needs to be an async lock for the send half. So we will register the
+        // the receiver when we poll the first message from the stream.
+
+        let dispatch = Arc::clone(&self.dispatch);
+
+        let stream = stream! {
+            let stream = dispatch.lock().await.receive();
+            while let Some(message) = stream.next().await {
+                yield message;
+            }
+        };
+
+        stream.boxed()
     }
 
     fn close(&self, reason: CloseReason) {
+        // TODO: I think we must poll_close on the underlying socket
+
         log::debug!("Peer::close: reason={:?}", reason);
 
         let close_tx_opt = self.close_tx.lock().take();
