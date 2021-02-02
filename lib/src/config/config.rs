@@ -155,7 +155,10 @@ pub struct FileStorageConfig {
     database_parent: PathBuf,
 
     /// Path to peer key
-    peer_key: PathBuf,
+    peer_key_path: PathBuf,
+
+    /// The key used for the peer key, if the file is not present.
+    peer_key: Option<String>,
 
     /// Path to validator key
     #[cfg(feature = "validator")]
@@ -174,7 +177,8 @@ impl FileStorageConfig {
         let path = path.as_ref();
         Self {
             database_parent: path.to_path_buf(),
-            peer_key: path.join("peer_key.dat"),
+            peer_key_path: path.join("peer_key.dat"),
+            peer_key: None,
             #[cfg(feature = "validator")]
             validator_key_path: Some(path.join("validator_key.dat")),
             #[cfg(feature = "validator")]
@@ -353,8 +357,18 @@ impl StorageConfig {
     pub(crate) fn identity_keypair(&self) -> Result<IdentityKeypair, Error> {
         match self {
             StorageConfig::Filesystem(file_storage) => {
-                Ok(FileStore::new(&file_storage.peer_key)
-                    .load_or_store(IdentityKeypair::generate_ed25519)?)
+                Ok(FileStore::new(&file_storage.peer_key_path)
+                    .load_or_store(|| {
+                        if let Some(key) = file_storage.peer_key.as_ref() {
+                            // TODO: handle errors
+                            let secret_key = IdentityKeypair::deserialize_from_vec(&hex::decode(key).unwrap()).unwrap();
+                            secret_key.into()
+                        }
+                        else {
+                            IdentityKeypair::generate_ed25519()
+                            // todo!("Load hex string");
+                        }
+                    })?)
             }
             _ => Err(self.not_available()),
         }
@@ -701,8 +715,11 @@ impl ClientConfigBuilder {
         if let Some(path) = config_file.database.path.as_ref() {
             file_storage.database_parent = PathBuf::from(path);
         }
-        if let Some(path) = config_file.network.peer_key_file.as_ref() {
-            file_storage.peer_key = PathBuf::from(path);
+        if let Some(key_path) = config_file.network.peer_key_file.as_ref() {
+            file_storage.peer_key_path = PathBuf::from(key_path);
+        }
+        if let Some(key) = config_file.network.peer_key.as_ref() {
+            file_storage.peer_key = Some(key.to_owned());
         }
         #[cfg(feature = "validator")]
         if let Some(validator_config) = config_file.validator.as_ref() {
