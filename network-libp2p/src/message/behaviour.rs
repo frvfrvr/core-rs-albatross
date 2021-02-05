@@ -114,7 +114,7 @@ impl NetworkBehaviour for MessageBehaviour {
             connected_point
         );
 
-        // Send an event to the handler that tell's it, if this is an inbound or outbound connection, and the registered
+        // Send an event to the handler that tells it if this is an inbound or outbound connection, and the registered
         // messages handlers, that receive from all peers.
         self.events.push_back(NetworkBehaviourAction::NotifyHandler {
             peer_id: peer_id.clone(),
@@ -160,11 +160,11 @@ impl NetworkBehaviour for MessageBehaviour {
     fn poll(&mut self, cx: &mut Context<'_>, _params: &mut impl PollParameters) -> Poll<NetworkBehaviourAction<HandlerInEvent, NetworkEvent<Peer>>> {
         // Emit custom events.
         if let Some(event) = self.events.pop_front() {
-            log::trace!("MessageBehaviour::poll: Emitting event: {:?}", event);
+            //log::trace!("MessageBehaviour::poll: Emitting event: {:?}", event);
             return Poll::Ready(event);
         }
-
-        // Remember the waker
+        
+        // Remember the waker and then return Pending
         if self.waker.is_none() {
             self.waker = Some(cx.waker().clone());
         }

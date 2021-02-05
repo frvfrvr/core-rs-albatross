@@ -588,6 +588,7 @@ impl NetworkInterface for Network {
     fn receive_from_all<'a, T: Message>(&self) -> BoxStream<'a, (T, Arc<Peer>)> {
         let mut action_tx = self.action_tx.clone();
 
+        
         // Future to register the channel.
         let register_stream = async move {
             let (tx, rx) = mpsc::channel(0);

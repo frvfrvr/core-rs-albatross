@@ -107,7 +107,7 @@ impl ProtocolsHandler for MessageHandler {
     }
 
     fn inject_fully_negotiated_inbound(&mut self, socket: MessageDispatch<NegotiatedSubstream>, _info: ()) {
-        log::debug!("MessageHandler::inject_fully_negotiated_inbound");
+        log::trace!("inject_fully_negotiated_inbound");
 
         if self.peer.is_none() && self.socket.is_none() {
             self.socket = Some(socket);
@@ -118,7 +118,7 @@ impl ProtocolsHandler for MessageHandler {
     }
 
     fn inject_fully_negotiated_outbound(&mut self, socket: MessageDispatch<NegotiatedSubstream>, _info: ()) {
-        log::debug!("MessageHandler::inject_fully_negotiated_outbound");
+        log::trace!("inject_fully_negotiated_outbound");
 
         if self.peer.is_none() && self.socket.is_none() {
             self.socket = Some(socket);
@@ -129,7 +129,7 @@ impl ProtocolsHandler for MessageHandler {
     }
 
     fn inject_event(&mut self, event: HandlerInEvent) {
-        log::debug!("MessageHandler::inject_event: {:?}", event);
+        log::trace!("inject_event: {:?}", event);
 
         match event {
             HandlerInEvent::PeerConnected { peer_id, outbound, receive_from_all } => {
@@ -137,48 +137,24 @@ impl ProtocolsHandler for MessageHandler {
                 assert!(self.peer_id.is_none());
                 assert!(self.receive_from_all.is_none());
 
-                log::debug!("Requesting outbound substream.");
-
                 self.peer_id = Some(peer_id);
                 self.receive_from_all = Some(receive_from_all);
 
                 if outbound {
-                    // Next open the outbound
+                    // Next open the outbound, but only if our connection is outbound
+                    log::debug!("Requesting outbound substream to: {:?}", self.peer_id);
+
                     self.events.push_back(ProtocolsHandlerEvent::OutboundSubstreamRequest {
                         protocol: SubstreamProtocol::new(MessageProtocol::default(), ()),
                     });
                     self.wake();
                 }
             } 
-
-            /*
-            HandlerInEvent::PeerDisconnected => {
-                unreachable!();
-                // FIXME: Actually I think this is never called.
-                // If `self.peer` is `None`, it was closed by this handler already.
-                // TODO: We can expect `self.peer` to be Some here.
-                if let Some(peer) = self.peer.take() {
-                    self.socket = None;
-                    self.close_rx = None;
-                    self.keep_alive = KeepAlive::No;
-
-                    log::debug!("Peer disconnected: {:?}", peer);
-
-                    self.events.push_back(ProtocolsHandlerEvent::Custom(HandlerOutEvent::PeerClosed {
-                        reason: CloseReason::Other, // TODO: We might have a reason from the close_rx
-                        peer
-                    }));
-
-                    self.wake();
-                }
-            },
-            */
         }
     }
 
     fn inject_dial_upgrade_error(&mut self, _info: Self::OutboundOpenInfo, error: ProtocolsHandlerUpgrErr<SerializingError>) {
-        // TODO handle this
-        panic!("Dial upgrade error: {}", error);
+        log::error!("Dial upgrade error: {}", error);
     }
 
     fn connection_keep_alive(&self) -> KeepAlive {
@@ -187,11 +163,8 @@ impl ProtocolsHandler for MessageHandler {
 
     fn poll(&mut self, cx: &mut Context) -> Poll<ProtocolsHandlerEvent<MessageProtocol, (), HandlerOutEvent, HandlerError>> {
         loop {
-            log::trace!("MessageHandler::poll - Iteration");
-
             // Emit event
             if let Some(event) = self.events.pop_front() {
-                log::trace!("MessageHandler: emitting event: {:?}", event);
                 return Poll::Ready(event);
             }
 

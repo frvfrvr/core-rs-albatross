@@ -32,9 +32,12 @@ impl<T> TokioAdapter<T> {
 
 impl<T: AsyncRead> AsyncRead for TokioAdapter<T> {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+        
         let p = AsyncRead::poll_read(self.project().inner, cx, buf);
 
-        log::trace!("polling socket: {:?}", p);
+        // If the underlying substream is eof, this should give us Poll::Ready(Ok(0))
+        log::trace!("polled socket in tokio wrapper: {:?}", p);
+        assert!(matches!(p, Poll::Pending), "Not pending");
 
         p
     }
@@ -75,20 +78,20 @@ impl<T: AsyncRead> TokioAsyncRead for TokioAdapter<T> {
     */
 
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
-        AsyncRead::poll_read(self.project().inner, cx, buf)
+        AsyncRead::poll_read(self, cx, buf)
     }
 }
 
 impl<T: AsyncWrite> TokioAsyncWrite for TokioAdapter<T> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
-        AsyncWrite::poll_write(self.project().inner, cx, buf)
+        AsyncWrite::poll_write(self, cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        AsyncWrite::poll_flush(self.project().inner, cx)
+        AsyncWrite::poll_flush(self, cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        AsyncWrite::poll_close(self.project().inner, cx)
+        AsyncWrite::poll_close(self, cx)
     }
 }

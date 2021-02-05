@@ -67,7 +67,7 @@ impl DiscoveryConfig {
             protocols_filter: Protocols::all(),
             services_filter: Services::all(),
             house_keeping_interval: Duration::from_secs(60),
-            keep_alive: KeepAlive::Yes,
+            keep_alive: KeepAlive::No,
         }
     }
 }
@@ -151,29 +151,17 @@ impl NetworkBehaviour for DiscoveryBehaviour {
     }
 
     fn inject_connected(&mut self, peer_id: &PeerId) {
-        log::trace!("DiscoveryBehaviour::inject_connected: {}", peer_id);
-
         self.connected_peers.insert(peer_id.clone());
     }
 
     fn inject_disconnected(&mut self, peer_id: &PeerId) {
-        log::trace!("DiscoveryBehaviour::inject_disconnected: {}", peer_id);
-
         self.connected_peers.remove(peer_id);
     }
 
     fn inject_connection_established(&mut self, peer_id: &PeerId, connection_id: &ConnectionId, connected_point: &ConnectedPoint) {
-        log::trace!("DiscoveryBehaviour::inject_connection_established:");
-        log::trace!("  - peer_id: {:?}", peer_id);
-        log::trace!("  - connection_id: {:?}", connection_id);
-        log::trace!("  - connected_point: {:?}", connected_point);
+        log::trace!("inject_connection_established: peer_id={:?}", peer_id);
 
-        // TODO: In libp2p 0.29 there is a method for this:
-        // connected_point.get_remote_address()
-        let remote_address = match connected_point {
-            ConnectedPoint::Dialer { address } => address,
-            ConnectedPoint::Listener { local_addr, .. } => local_addr,
-        };
+        let remote_address = connected_point.get_remote_address();
 
         self.events.push_back(NetworkBehaviourAction::NotifyHandler {
             peer_id: peer_id.clone(),
@@ -183,7 +171,7 @@ impl NetworkBehaviour for DiscoveryBehaviour {
     }
 
     fn inject_event(&mut self, peer_id: PeerId, _connection: ConnectionId, event: HandlerOutEvent) {
-        log::trace!("DiscoveryBehaviour::inject_event: peer_id={}: {:?}", peer_id, event);
+        log::trace!("inject_event: peer_id={}: {:?}", peer_id, event);
 
         match event {
             HandlerOutEvent::PeerExchangeEstablished { peer_contact } => {

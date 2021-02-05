@@ -84,8 +84,6 @@ where
     /// 
     pub fn poll_inbound(&mut self, cx: &mut Context<'_>, peer: &Arc<Peer>) -> Poll<Result<(), Error>> {
         loop {
-            log::trace!("poll_inbound: buffer={:?}", self.buffer);
-
             // Try to dispatch the buffered value. This will return Poll::Pending if the buffer can't be cleared.
             if let Some((type_id, _)) = &self.buffer {
                 log::trace!("dispatch buffered value: type_id={}, peer={:?}", type_id, peer);
@@ -127,12 +125,8 @@ where
                     log::warn!("No receiver for message type. Dropping message: type_id={}", type_id);
                 }
             }
-            else {
-                log::trace!("nothing buffered");
-            }
 
             // Poll the incoming stream and handle the message
-            log::trace!("poll framed...");
             match self.framed.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok((type_id, data)))) => {
                     // A message was received. The stream gives us tuples of message type and data (BytesMut)
@@ -163,7 +157,7 @@ where
 
                 // We need to wait for more data
                 Poll::Pending => {
-                    log::trace!("pending");
+                    log::trace!("inbound socket pending");
                     return Poll::Pending;
                 }
             }
