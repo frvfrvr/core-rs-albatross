@@ -145,10 +145,8 @@ impl BlockchainInterface for BlockchainDispatcher {
 
     #[stream]
     async fn head_subscribe(&mut self) -> Result<BoxStream<'static, Blake2bHash>, Error> {
-        Ok(self.blockchain
-            .notifier
-            .write()
-            .as_stream()
+        let stream = self.blockchain.notifier.write().as_stream();
+        Ok(stream
             .map(|event| {
                 match event {
                     BlockchainEvent::Extended(hash) => hash,

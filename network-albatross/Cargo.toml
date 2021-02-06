@@ -30,7 +30,8 @@ rand = "0.7"
 reqwest = "0.9"
 tk-listen = "0.2.1"
 tokio = "0.1"
-tokio-02 = { package = "tokio", version = "0.2", features = ["sync"] }
+tokio-02 = { package = "tokio", version = "1.2", features = ["sync"] }
+tokio-stream = "0.1"
 tokio-tls = "0.2"
 tokio-tungstenite = "0.8"
 url = "1.7"

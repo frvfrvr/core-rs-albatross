@@ -3,8 +3,9 @@ use std::sync::{Arc, Weak};
 use futures::{FutureExt, Stream, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::broadcast::{
-    channel as broadcast, Receiver as BroadcastReceiver, Sender as BroadcastSender,
+    channel as broadcast, Sender as BroadcastSender,
 };
+use tokio_stream::wrappers::BroadcastStream;
 
 use block_albatross::Block;
 use blockchain_albatross::Blockchain;
@@ -189,8 +190,8 @@ impl<N: Network> Consensus<N> {
         }
     }
 
-    pub fn subscribe_events(&self) -> BroadcastReceiver<ConsensusEvent<N>> {
-        self.events.subscribe()
+    pub fn subscribe_events(&self) -> BroadcastStream<ConsensusEvent<N>> {
+        BroadcastStream::new(self.events.subscribe())
     }
 
     pub fn is_established(&self) -> bool {

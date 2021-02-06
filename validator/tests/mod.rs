@@ -1,8 +1,8 @@
 use futures::{future, StreamExt};
 use rand::prelude::StdRng;
 use rand::SeedableRng;
-use tokio::sync::broadcast;
 use tokio::time;
+use tokio_stream::wrappers::BroadcastStream;
 
 use nimiq_blockchain_albatross::Blockchain;
 use nimiq_bls::KeyPair;
@@ -111,7 +111,7 @@ async fn mock_validators(hub: &mut MockHub, num_validators: usize) -> Vec<Valida
     }
 
     // Wait until validators are connected.
-    let mut events: Vec<broadcast::Receiver<ConsensusEvent<MockNetwork>>> =
+    let mut events: Vec<BroadcastStream<ConsensusEvent<MockNetwork>>> =
         consensus.iter().map(|v| v.subscribe_events()).collect();
 
     // Start consensus.

@@ -7,7 +7,7 @@ use futures::{
     task::{Context, Poll},
     Stream, StreamExt, TryFutureExt,
 };
-use tokio::sync::broadcast;
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 use beserial::{Deserialize, Serialize};
 
@@ -57,12 +57,12 @@ pub trait Network: Send + Sync + 'static {
     type Error: std::error::Error;
     type PubsubId: PubsubId<<Self::PeerType as Peer>::Id>;
 
-    fn get_peer_updates(&self) -> (Vec<Arc<Self::PeerType>>, broadcast::Receiver<NetworkEvent<Self::PeerType>>);
+    fn get_peer_updates(&self) -> (Vec<Arc<Self::PeerType>>, BroadcastStream<NetworkEvent<Self::PeerType>>);
 
     fn get_peers(&self) -> Vec<Arc<Self::PeerType>>;
     fn get_peer(&self, peer_id: <Self::PeerType as Peer>::Id) -> Option<Arc<Self::PeerType>>;
 
-    fn subscribe_events(&self) -> broadcast::Receiver<NetworkEvent<Self::PeerType>>;
+    fn subscribe_events(&self) -> BroadcastStream<NetworkEvent<Self::PeerType>>;
 
     async fn broadcast<T: Message>(&self, msg: &T) {
         future::join_all(self.get_peers().iter().map(|peer| {
@@ -109,7 +109,7 @@ pub trait Network: Send + Sync + 'static {
 /// A wrapper around `SelectAll` that automatically subscribes to new peers.
 pub struct ReceiveFromAll<T: Message, P> {
     inner: SelectAll<Pin<Box<dyn Stream<Item = (T, Arc<P>)> + Send>>>,
-    event_stream: Pin<Box<dyn FusedStream<Item = Result<NetworkEvent<P>, broadcast::RecvError>> + Send>>,
+    event_stream: Pin<Box<dyn FusedStream<Item = Result<NetworkEvent<P>, BroadcastStreamRecvError>> + Send>>,
 }
 
 impl<T: Message, P: Peer + 'static> ReceiveFromAll<T, P> {
@@ -122,7 +122,7 @@ impl<T: Message, P: Peer + 'static> ReceiveFromAll<T, P> {
                 let peer_inner = Arc::clone(&peer);
                 peer.receive::<T>().map(move |item| (item, Arc::clone(&peer_inner))).boxed()
             })),
-            event_stream: Box::pin(updates.into_stream().fuse()),
+            event_stream: Box::pin(updates.fuse()),
         }
     }
 }
@@ -145,8 +145,8 @@ impl<T: Message, P: Peer + 'static> Stream for ReceiveFromAll<T, P> {
                 // The receiver lagged too far behind.
                 // Attempting to receive again will return the oldest message still retained by the channel.
                 // So, that's what we do.
-                Poll::Ready(Some(Err(broadcast::RecvError::Lagged(_)))) => {}
-                Poll::Ready(None) | Poll::Ready(Some(Err(broadcast::RecvError::Closed))) => {
+                Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(_)))) => {}
+                Poll::Ready(None) => {
                     // There are no more active senders implying no further messages will ever be sent.
                     return Poll::Ready(None); // Discard this stream entirely.
                 }

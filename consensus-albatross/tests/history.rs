@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use beserial::Deserialize;
 use futures::StreamExt;
-use tokio::stream::pending;
+use tokio_stream::{self as stream};
+use simple_logger::SimpleLogger;
 
 use nimiq_block_production_albatross::{test_utils::*, BlockProducer};
 use nimiq_blockchain_albatross::Blockchain;
@@ -16,7 +17,7 @@ use nimiq_database::volatile::VolatileEnvironment;
 use nimiq_genesis::NetworkId;
 use nimiq_mempool::{Mempool, MempoolConfig};
 use nimiq_network_interface::prelude::Network;
-use nimiq_network_mock::{MockHub, MockNetwork};
+use nimiq_network_mock::{MockHub, MockNetwork, MockPeer};
 use nimiq_primitives::policy;
 
 /// Secret key of validator. Tests run with `network-primitives/src/genesis/unit-albatross.toml`
@@ -25,7 +26,7 @@ const SECRET_KEY: &str =
 
 #[tokio::test]
 async fn peers_can_sync() {
-    //simple_logger::init_with_level(Level::Trace);
+    // SimpleLogger::new().init().unwrap();
 
     let mut hub = MockHub::default();
 
@@ -73,12 +74,12 @@ async fn peers_can_sync() {
         blockchain2,
         mempool2,
         Arc::clone(&net2),
-        pending().boxed(),
+        Box::pin(stream::pending::<Arc<ConsensusAgent<MockPeer>>>().boxed()),
     )
     .await;
 
     net1.dial_mock(&net2);
-    tokio::time::delay_for(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let sync_result = sync2.next().await;
 
     assert!(sync_result.is_some());
@@ -190,7 +191,7 @@ async fn sync_ingredients() {
         blockchain1,
         mempool1,
         Arc::clone(&net1),
-        pending().boxed(),
+        Box::pin(stream::pending::<Arc<ConsensusAgent<MockPeer>>>().boxed()),
     )
     .await;
 
@@ -205,7 +206,7 @@ async fn sync_ingredients() {
         blockchain2,
         mempool2,
         Arc::clone(&net2),
-        pending().boxed(),
+        Box::pin(stream::pending::<Arc<ConsensusAgent<MockPeer>>>().boxed()),
     )
     .await;
 
@@ -213,8 +214,8 @@ async fn sync_ingredients() {
     let mut stream = consensus2.network.subscribe_events();
     net1.dial_mock(&net2);
     // Then wait for connection to be established.
-    stream.recv().await.unwrap();
-    tokio::time::delay_for(Duration::from_secs(1)).await; // FIXME, Prof. Berrang told me to do this
+    stream.next().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await; // FIXME, Prof. Berrang told me to do this
 
     // Test ingredients:
     // Request hashes

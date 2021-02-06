@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::time;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use futures::future;
 use futures::sink::Sink;
@@ -104,7 +105,7 @@ impl<N: ValidatorNetwork> TendermintAggregations<N> {
             let (sender, receiver) = mpsc::unbounded_channel::<LevelUpdate<TendermintContribution>>();
 
             // create the aggregation
-            let aggregation = Aggregation::new(protocol, id.clone(), Config::default(), own_contribution, receiver.boxed(), output_sink);
+            let aggregation = Aggregation::new(protocol, id.clone(), Config::default(), own_contribution, Box::pin(UnboundedReceiverStream::new(receiver)), output_sink);
 
             // create the stream closer and wrap in Arc so it can be shared borrow
             let stream_closer = Arc::new(AtomicBool::new(true));

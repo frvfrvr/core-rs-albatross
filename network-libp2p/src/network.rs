@@ -21,6 +21,7 @@ use libp2p::{
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
 #[cfg(test)]
 use libp2p::core::transport::MemoryTransport;
@@ -557,7 +558,7 @@ impl NetworkInterface for Network {
     type Error = NetworkError;
     type PubsubId = GossipsubId<PeerId>;
 
-    fn get_peer_updates(&self) -> (Vec<Arc<Self::PeerType>>, broadcast::Receiver<NetworkEvent<Self::PeerType>>) {
+    fn get_peer_updates(&self) -> (Vec<Arc<Self::PeerType>>, BroadcastStream<NetworkEvent<Self::PeerType>>) {
         self.peers.subscribe()
     }
 
@@ -569,8 +570,8 @@ impl NetworkInterface for Network {
         self.peers.get_peer(&peer_id)
     }
 
-    fn subscribe_events(&self) -> broadcast::Receiver<NetworkEvent<Self::PeerType>> {
-        self.events_tx.subscribe()
+    fn subscribe_events(&self) -> BroadcastStream<NetworkEvent<Self::PeerType>> {
+        BroadcastStream::new(self.events_tx.subscribe())
     }
 
     async fn subscribe<T>(&self, topic: &T) -> Result<Pin<Box<dyn Stream<Item = (T::Item, Self::PubsubId)> + Send>>, Self::Error>
@@ -1010,7 +1011,7 @@ mod tests {
         let mut messages = net1.subscribe(&TestTopic).await.unwrap();
         consume_stream(net2.subscribe(&TestTopic).await.unwrap());
 
-        tokio::time::delay_for(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
 
         net2.publish(&TestTopic, test_message.clone()).await.unwrap();
 

@@ -75,7 +75,7 @@ impl<TValidatorNetwork: ValidatorNetwork + 'static> NextProduceMicroBlockEvent<T
             ProduceMicroBlockEvent::MicroBlock(self.produce_micro_block())
         } else {
             debug!("Not our turn at #{}:{}, waiting for micro block", self.block_number, self.view_number);
-            time::delay_for(self.view_change_delay).await;
+            time::sleep(self.view_change_delay).await;
             info!(
                 "No micro block received within timeout at #{}:{}, starting view change",
                 self.block_number, self.view_number

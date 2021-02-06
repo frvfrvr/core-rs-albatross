@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures::task::{Context, Poll};
 use futures::{Future, StreamExt};
-use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
 
 use block_albatross::{Block, BlockType, ViewChangeProof};
 use blockchain_albatross::{BlockchainEvent, ForkEvent, PushResult};
@@ -49,9 +49,9 @@ pub struct Validator<TNetwork: Network, TValidatorNetwork: ValidatorNetwork + 's
     database: Database,
     env: Environment,
 
-    consensus_event_rx: broadcast::Receiver<ConsensusEvent<TNetwork>>,
-    blockchain_event_rx: mpsc::UnboundedReceiver<BlockchainEvent>,
-    fork_event_rx: mpsc::UnboundedReceiver<ForkEvent>,
+    consensus_event_rx: BroadcastStream<ConsensusEvent<TNetwork>>,
+    blockchain_event_rx: UnboundedReceiverStream<BlockchainEvent>,
+    fork_event_rx: UnboundedReceiverStream<ForkEvent>,
 
     epoch_state: Option<ActiveEpochState>,
     blockchain_state: BlockchainState,

@@ -10,7 +10,8 @@ use futures::task::{Context, Poll};
 use futures::{ready, select, FutureExt, Sink, Stream, StreamExt};
 
 use tokio::task::JoinHandle;
-use tokio::time::{interval_at, Instant, Interval};
+use tokio::time::{interval_at, Instant};
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::config::Config;
 use crate::contribution::AggregatableContribution;
@@ -54,10 +55,10 @@ struct NextAggregation<P: Protocol, T: Clone + Debug + Eq + Serialize + Deserial
     sender: UnboundedSender<(LevelUpdateMessage<P::Contribution, T>, usize)>,
 
     /// Interval for starting the next level regarless of previous levels completion
-    start_level_interval: Interval,
+    start_level_interval: IntervalStream,
 
     /// Interval for sending level updates to the corresponding peers regardless of progression
-    periodic_update_interval: Interval,
+    periodic_update_interval: IntervalStream,
 
     /// the level which needs activation next
     next_level_timeout: usize,
@@ -80,11 +81,11 @@ impl<P: Protocol, T: Clone + Debug + Eq + Serialize + Deserialize + Sized + Send
 
         // Regarless of level completion consecutive levels need to be activated at some point. Activate Levels every time this interval ticks,
         // if the level has not already been activated due to level completion
-        let start_level_interval = interval_at(Instant::now() + config.timeout, config.timeout);
+        let start_level_interval = IntervalStream::new(interval_at(Instant::now() + config.timeout, config.timeout));
 
         // Every `config.update_interval` send Level updates to corresponding peers no matter the aggregations progression
         // (makes sure other peers can catch up).
-        let periodic_update_interval = interval_at(Instant::now() + config.update_interval, config.update_interval);
+        let periodic_update_interval = IntervalStream::new(interval_at(Instant::now() + config.update_interval, config.update_interval));
 
         // create the NextAggregation struct
         let this = Self {

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::stream::{Stream, StreamExt};
 use parking_lot::Mutex;
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 use beserial::{Deserialize, Serialize};
 use nimiq_network_interface::network::{NetworkEvent, PubsubId, Topic};
@@ -148,7 +148,7 @@ impl Network for MockNetwork {
     type Error = MockNetworkError;
     type PubsubId = MockPubsubId<MockPeerId>;
 
-    fn get_peer_updates(&self) -> (Vec<Arc<MockPeer>>, broadcast::Receiver<NetworkEvent<MockPeer>>) {
+    fn get_peer_updates(&self) -> (Vec<Arc<MockPeer>>, BroadcastStream<NetworkEvent<MockPeer>>) {
         self.peers.subscribe()
     }
 
@@ -160,7 +160,7 @@ impl Network for MockNetwork {
         self.peers.get_peer(&peer_id)
     }
 
-    fn subscribe_events(&self) -> broadcast::Receiver<NetworkEvent<MockPeer>> {
+    fn subscribe_events(&self) -> BroadcastStream<NetworkEvent<MockPeer>> {
         self.get_peer_updates().1
     }
 
@@ -171,7 +171,7 @@ impl Network for MockNetwork {
         let mut hub = self.hub.lock();
         let is_connected = Arc::clone(&self.is_connected);
 
-        let stream = hub.get_topic(topic.topic()).subscribe().into_stream().filter_map(move |r| {
+        let stream = BroadcastStream::new(hub.get_topic(topic.topic()).subscribe()).filter_map(move |r| {
             let is_connected = Arc::clone(&is_connected);
 
             async move {
@@ -181,8 +181,7 @@ impl Network for MockNetwork {
                             Ok(item) => return Some((item, peer_id)),
                             Err(e) => log::warn!("Dropped item because deserialization failed: {}", e),
                         },
-                        Err(broadcast::RecvError::Closed) => {}
-                        Err(broadcast::RecvError::Lagged(_)) => log::warn!("Mock gossipsub channel is lagging"),
+                        Err(BroadcastStreamRecvError::Lagged(_)) => log::warn!("Mock gossipsub channel is lagging"),
                     }
                 }
                 else {
