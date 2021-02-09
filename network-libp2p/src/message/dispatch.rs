@@ -1,26 +1,29 @@
 use std::{
     collections::HashMap,
     pin::Pin,
-    task::Waker,
+    sync::Arc,
 };
 
 use futures::{
     channel::mpsc,
     io::{AsyncRead, AsyncWrite},
     stream::{Stream, StreamExt},
-    sink::SinkExt,
+    sink::Sink,
     task::{Context, Poll},
+    future::Future,
 };
 use tokio_util::codec::Framed;
-use bytes::{BytesMut, buf::BufExt};
-use async_stream::stream;
+use bytes::{Bytes, buf::BufExt};
+use parking_lot::Mutex;
 
-use beserial::Deserialize;
+use beserial::{Serialize, Deserialize};
 
 use crate::codecs::{
     typed::{MessageCodec, Error, Message, MessageType},
     tokio_adapter::TokioAdapter,
 };
+
+use super::peer::Peer;
 
 /// Message dispatcher for a single socket.
 /// 
@@ -46,24 +49,21 @@ where
     framed: Pin<Box<Framed<TokioAdapter<C>, MessageCodec>>>,
 
     /// Channels that receive raw messages for a specific message type.
-    channels: HashMap<MessageType, mpsc::Sender<BytesMut>>,
+    /// 
+    /// Note: Those are ignored if the peer was not set for this dispatch.
+    channels: HashMap<MessageType, mpsc::Sender<(Bytes, Arc<Peer>)>>,
 
-    /// If we receive messages for which no receiver is registered, we buffer them here.
-    buffers: HashMap<MessageType, Vec<BytesMut>>,
+    /// A single buffer slot. This is needed because we can only find out if we have capacity for a message after
+    /// receiving it.
+    buffer: Option<(MessageType, Bytes)>,
 
-    /// Number of buffered messages. This is used to bound the amount of messages we buffer.
-    num_buffered: usize,
-
-    /// Maximum number of buffered messages.
-    max_buffered: usize,
-
-    /// Waker to wake-up the task once there is space in the buffer again.
-    waker: Option<Waker>,
+    /// The size for new channels
+    channel_size: usize,
 }
 
 impl<C> MessageDispatch<C>
 where
-    C: AsyncRead + AsyncWrite + Send + Sync + 'static,
+    C: AsyncRead + AsyncWrite + Send + Sync + 'static + Unpin,
 {
     ///
     /// # Arguments
@@ -71,103 +71,117 @@ where
     ///  - `socket`: The underlying socket
     ///  - `max_buffered`: Maximum number of buffered messages. Must be at least 1.
     /// 
-    pub fn new(socket: C, max_buffered: usize) -> Self {
-        // This is to ensure that we can just start processing the message and buffer it the channel
-        // is full.
-        assert!(max_buffered > 0, "Needs at least a buffer size of 1");
-
+    pub fn new(socket: C, channel_size: usize) -> Self {
         Self {
-            framed: Box::pin(Framed::new(socket.into(), MessageCodec::default())),
+            framed: Box::pin(Framed::new(TokioAdapter::new(socket), MessageCodec::default())),
             channels: HashMap::new(),
-            buffers: HashMap::new(),
-            num_buffered: 0,
-            max_buffered,
-            waker: None,
-        }
-    }
-
-    /// Buffers the message.
-    /// 
-    /// # Panics
-    /// 
-    /// Panics if the buffer is full (i.e. `num_buffered == max_buffered`). This is called by `poll_inbound`, which makes
-    /// sure that there is space in the buffer.
-    /// 
-    fn put_buffer(&mut self, type_id: MessageType, data: BytesMut) {
-        assert!(self.num_buffered < self.max_buffered, "Buffer is full");
-        
-        self.buffers.entry(type_id)
-            .or_default()
-            .push(data);
-    }
-
-    /// Process the message, by either sending it (sucessfully) to the receiver, or buffering it.
-    /// This also handles disconnected channels, by removing them.
-    fn process_message(&mut self, type_id: MessageType, data: BytesMut, cx: &mut Context<'_>) {
-        if let Some(tx) = self.channels.get(&type_id) {
-            if let Err(e) = tx.try_send(data) {
-                if e.is_full() {
-                    self.put_buffer(type_id, e.into_inner());
-                }
-                else if e.is_disconnected() {
-                    // The receiver disconnected, so we remove it and buffer the message for the next
-                    // receiver.
-                    self.channels.remove(&type_id);
-                    self.put_buffer(type_id, e.into_inner());
-                }
-                else {
-                    // Sending can only fail if channel is full or disconnected.
-                    unreachable!();
-                }
-            }
+            buffer: None,
+            channel_size,
         }
     }
 
     /// Polls the inbound socket and either pushes the message to the registered channel, or buffers it.
-    pub fn poll_inbound(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<(), Error>>> {
-        // Make sure we have space for buffering.
-        if self.num_buffered == self.max_buffered {
-            self.waker = Some(cx.waker().clone());
-            return Poll::Pending;
-        }
+    /// 
+    pub fn poll_inbound(&mut self, cx: &mut Context<'_>, peer: &Arc<Peer>) -> Poll<Result<(), Error>> {
+        loop {
+            log::trace!("poll_inbound: buffer={:?}", self.buffer);
 
-        // Poll the incoming stream and handle the message
-        match self.framed.poll_next_unpin(cx) {
-            // A message was received. The stream gives us tuples of message type and data (BytesMut)
-            Poll::Ready(Some(Ok((type_id, data)))) => {
-                self.process_message(type_id, data, cx);
+            // Try to dispatch the buffered value. This will return Poll::Pending if the buffer can't be cleared.
+            if let Some((type_id, _)) = &self.buffer {
+                log::trace!("dispatch buffered value: type_id={}, peer={:?}", type_id, peer);
 
-                Poll::Ready(Some(Ok(())))
+                let type_id = *type_id;
+
+                if let Some(tx) = self.channels.get_mut(&type_id) {
+                    let mut receiver_is_gone = false;
+
+                    match tx.poll_ready(cx) {   
+                        // No space to put the message into the channel
+                        Poll::Pending => return Poll::Pending,
+
+                        // Send error - the receiver must have been closed.
+                        Poll::Ready(Err(_)) => receiver_is_gone = true,
+
+                        // We have space, so send the message to the channel.
+                        Poll::Ready(Ok(())) => {
+                            // Take the buffered message. We know that there is one, from the outer `if let Some`-block
+                            let (_, data) = self.buffer.take().unwrap();
+
+                            log::trace!("dispatching message to receiver: {:?}", data);
+
+                            // Not sure why this still can fail, but if it does, we consider the receiver to be gone.
+                            if let Err(_) = tx.start_send((data, Arc::clone(peer))) {
+                                receiver_is_gone = true
+                            }
+                        }
+                    }
+
+                    if receiver_is_gone {
+                        // Send error, i.e. the receiver is closed. Remove it, but usually we expect receivers to stay around.
+                        log::warn!("Receiver is gone: type_id={}", type_id);
+                        self.channels.remove(&type_id);
+                    }
+                }
+                else {
+                    // Drop message
+                    log::warn!("No receiver for message type. Dropping message: type_id={}", type_id);
+                }
+            }
+            else {
+                log::trace!("nothing buffered");
             }
 
-            // Error while receiving a message. This could be an error from the underlying socket (i.e. an
-            // IO error), or the message was malformed.
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            // Poll the incoming stream and handle the message
+            log::trace!("poll framed...");
+            match self.framed.poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok((type_id, data)))) => {
+                    // A message was received. The stream gives us tuples of message type and data (BytesMut)
+                    // Store the message into the buffer and continue the loop (i.e. immediately trying to send it to the
+                    // receivers).
 
-            // End of stream. This will be propagated as error, so 
-            Poll::Ready(None) => Poll::Ready(None),
+                    log::trace!("received message: type_id={}, data={:?}", type_id, data);
 
-            Poll::Pending => Poll::Pending,
+                    assert!(self.buffer.is_none());
+
+                    // We 'freeze' the message, i.e. turning the `BytesMut` into a `Bytes`. We could use this to cheaply
+                    // clone the reference to the data.
+                    self.buffer = Some((type_id, data.freeze()));
+                },
+
+                // Error while receiving a message. This could be an error from the underlying socket (i.e. an
+                // IO error), or the message was malformed.
+                Poll::Ready(Some(Err(e))) => {
+                    log::warn!("socket error: {}", e);
+                    return Poll::Ready(Err(e));
+                }
+
+                // End of stream. So we terminate the future
+                Poll::Ready(None) => {
+                    log::warn!("end of stream");
+                    return Poll::Ready(Ok(()));
+                }
+
+                // We need to wait for more data
+                Poll::Pending => {
+                    log::trace!("pending");
+                    return Poll::Pending;
+                }
+            }
         }
     }
 
-    /// Send a message to the peer
-    /// 
-    /// # Type Arguments
-    /// 
-    ///  - `M`: The type of the message.
-    /// 
-    /// # Arguments
-    /// 
-    ///  - `message`: Sends the message (with header) to the other peer.
-    /// 
-    /// # Returns
-    /// 
-    /// Returns an error, if the message can't be written to the underlying socket.
-    /// 
-    pub async fn send<M: Message>(&mut self, message: &M) -> Result<(), Error> {
-        self.framed.send(message).await?;
-        Ok(())
+    pub fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        let sink: Pin<&mut Framed<TokioAdapter<C>, MessageCodec>> = Pin::new(&mut self.framed);
+
+        // We need to call poll_close for a specific Sink<T>, so...
+        #[derive(Debug, Serialize, Deserialize)]
+        struct CompilerShutUp;
+        impl Message for CompilerShutUp {
+            const TYPE_ID: u64 = 420;
+        }
+        
+        Sink::<&CompilerShutUp>::poll_close(sink, cx)
+            .map_err(|e| e.into())
     }
 
     /// Registers a message receiver for a specific message type (as defined by the implementation `M`).
@@ -184,43 +198,118 @@ where
         let type_id = M::TYPE_ID.into();
 
         if self.channels.contains_key(&type_id) {
-            panic!("Receiver for channel already registered: type_id = {}", type_id);
+            panic!("Local receiver for channel already registered: type_id = {}", type_id);
         }
-
+        
         // We don't really need buffering here, since we already have that in the `MessageDispatch`.
-        let (tx, mut rx) = mpsc::channel(0);
-
-        // Get all buffered messages.
-        let buffered = self.buffers.remove(&type_id).unwrap_or_default();
-
-        // Wake up the task, if it was waiting for space in the buffer
-        self.wake();
+        // TODO: Remove magic number
+        let (tx, rx) = mpsc::channel(self.channel_size);
 
         // Insert sender into channels
         self.channels.insert(M::TYPE_ID.into(), tx);
 
-        stream! {
-            // First yield all buffered messages
-            for data in buffered {
-                match Deserialize::deserialize(&mut data.reader()) {
-                    Ok(message) => yield message,
-                    Err(e) => log::error!("Error while deserializing message for receiver: {}", e),
+        rx.filter_map(|(data, _peer)| async move {
+            match Deserialize::deserialize(&mut data.reader()) {
+                Ok(message) => Some(message),
+                Err(e) => {
+                    log::error!("Error while deserializing message for receiver: {}", e);
+                    None
+                }
+            }
+        })
+    }
+
+    /// Add multiple receivers, that will receive the raw data alongside the peer.
+    /// 
+    /// This doesn't check if a receiver for a message type is registered twice.
+    /// 
+    pub fn receive_multiple_raw(&mut self, receive_from_all: impl IntoIterator<Item = (MessageType, mpsc::Sender<(Bytes, Arc<Peer>)>)>) {
+        self.channels.extend(receive_from_all);
+    }
+}
+
+impl<C> MessageDispatch<C> 
+where
+    C: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    pub fn into_inner(self) -> C {
+        Pin::into_inner(self.framed).into_inner().into_inner()
+    }
+}
+
+/// Future that sends a message over this socket.
+pub struct SendMessage<'m, C, M>
+where
+    C: AsyncRead + AsyncWrite + Send + Sync,
+{
+    dispatch: Arc<Mutex<MessageDispatch<C>>>,
+    message: Option<&'m M>,
+}
+
+impl<'m, C, M> SendMessage<'m, C, M>
+where
+    C: AsyncRead + AsyncWrite + Send + Sync,
+{
+    /// Creates a future that sends the message.
+    /// 
+    /// # Arguments
+    /// 
+    ///  - `dispatch`: An `Arc<Mutex<_>>` of the `MessageDispatch` that is used to send the message.
+    ///  - `message`: A borrow of the message.
+    pub fn new(dispatch: Arc<Mutex<MessageDispatch<C>>>, message: &'m M) -> Self {
+        SendMessage {
+            dispatch,
+            message: Some(message),
+        }
+    }
+}
+
+impl<'m, C, M> Future for SendMessage<'m, C, M>
+where
+    C: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    M: Message,
+{
+    type Output = Result<(), Error>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        
+        //let sink: Pin<&mut Framed<TokioAdapter<C>, MessageCodec>> = Pin::new(&mut dispatch.framed);
+
+        // If we haven't already sent the message
+        if self.message.is_some() {
+            // First poll sink until it's ready
+            {
+                let mut dispatch = self.dispatch.lock();
+                let sink = Pin::new(&mut dispatch.framed);
+
+                match Sink::<&M>::poll_ready(sink, cx) {
+                    // Ready, so continue.
+                    Poll::Ready(Ok(())) => {},
+    
+                    // Either pending or error, so just return that
+                    p => return p,
                 }
             }
 
-            // Then yield the messages that we receive from the dispatch.
-            while let Some(data) = rx.next().await {
-                match Deserialize::deserialize(&mut data.reader()) {
-                    Ok(message) => yield message,
-                    Err(e) => log::error!("Error while deserializing message for receiver: {}", e),
+            // Start sending
+            {
+                // This always gives us a message, since the outer if-block checks for it.
+                let message = self.message.take().unwrap();
+
+                let mut dispatch = self.dispatch.lock();
+                let sink = Pin::new(&mut dispatch.framed);
+                
+                if let Err(e) = sink.start_send(message) {
+                    return Poll::Ready(Err(e));
                 }
             }
         }
-    }
 
-    fn wake(&mut self) {
-        if let Some(waker) = self.waker.take() {
-            waker.wake();
+        // Flush
+        {
+            let mut dispatch = self.dispatch.lock();
+            let sink = Pin::new(&mut dispatch.framed);
+            Sink::<&M>::poll_flush(sink, cx)
         }
     }
 }

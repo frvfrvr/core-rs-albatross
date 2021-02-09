@@ -12,7 +12,7 @@ use crate::message::crc::ReaderComputeCrc32;
 mod crc;
 
 
-#[derive(Clone, Debug, From, Into, AsRef, AsMut, Display, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, From, Into, AsRef, AsMut, Display, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MessageType(u64);
 
 impl MessageType {
@@ -36,7 +36,7 @@ impl From<MessageType> for uvar {
 
 const MAGIC: u32 = 0x4204_2042;
 
-pub trait Message: Serialize + Deserialize + Send + Sync + std::fmt::Debug + 'static {
+pub trait Message: Serialize + Deserialize + Send + Sync + Unpin + std::fmt::Debug + 'static {
     const TYPE_ID: u64;
 
     // Does CRC stuff and is called by network

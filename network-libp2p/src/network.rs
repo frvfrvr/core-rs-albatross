@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use futures::{
     channel::{mpsc, oneshot},
     lock::Mutex as AsyncMutex,
-    FutureExt, SinkExt, Stream, StreamExt,
+    future::FutureExt,
+    stream::{Stream, StreamExt, BoxStream},
+    sink::SinkExt,
 };
 use libp2p::{
     core,
@@ -21,6 +23,7 @@ use libp2p::{
 };
 use thiserror::Error;
 use tokio::sync::broadcast;
+use bytes::{Bytes, buf::BufExt};
 
 #[cfg(test)]
 use libp2p::core::transport::MemoryTransport;
@@ -31,6 +34,7 @@ use nimiq_network_interface::{
     network::{Network as NetworkInterface, NetworkEvent, PubsubId, Topic},
     peer::{Peer as PeerInterface},
     peer_map::ObservablePeerMap,
+    message::{Message, MessageType},
 };
 use nimiq_utils::time::OffsetTime;
 
@@ -187,6 +191,10 @@ pub enum NetworkAction {
         source: PeerId,
         output: oneshot::Sender<Result<bool, NetworkError>>,
     },
+    ReceiveFromAll {
+        type_id: MessageType,
+        output: mpsc::Sender<(Bytes, Arc<Peer>)>,
+    },
 }
 
 
@@ -233,7 +241,7 @@ impl PubsubId<PeerId> for GossipsubId<PeerId> {
 pub struct Network {
     local_peer_id: PeerId,
     events_tx: broadcast::Sender<NetworkEvent<Peer>>,
-    action_tx: AsyncMutex<mpsc::Sender<NetworkAction>>,
+    action_tx: mpsc::Sender<NetworkAction>,
     peers: ObservablePeerMap<Peer>,
     connected_rx: AsyncMutex<Option<oneshot::Receiver<()>>>,
 }
@@ -266,7 +274,7 @@ impl Network {
         Self {
             local_peer_id,
             events_tx,
-            action_tx: AsyncMutex::new(action_tx),
+            action_tx,
             peers,
             connected_rx: AsyncMutex::new(Some(connected_rx)),
         }
@@ -536,6 +544,9 @@ impl Network {
                     MessageAcceptance::Accept,
                 )?)).ok();
             }
+            NetworkAction::ReceiveFromAll { type_id, output } => {
+                swarm.message.receive_from_all(type_id, output);
+            }
         }
 
         Ok(())
@@ -544,7 +555,7 @@ impl Network {
     pub async fn network_info(&self) -> Result<NetworkInfo, NetworkError> {
         let (output_tx, output_rx) = oneshot::channel();
 
-        self.action_tx.lock().await.send(NetworkAction::NetworkInfo { output: output_tx }).await?;
+        self.action_tx.clone().send(NetworkAction::NetworkInfo { output: output_tx }).await?;
         Ok(output_rx.await?)
     }
 }
@@ -572,6 +583,40 @@ impl NetworkInterface for Network {
         self.events_tx.subscribe()
     }
 
+    /// Implements `receive_from_all`, but instead of selecting over all peer message streams, we register a channel in
+    /// the network. The sender is copied to new peers when they're instantiated.
+    fn receive_from_all<'a, T: Message>(&self) -> BoxStream<'a, (T, Arc<Peer>)> {
+        let mut action_tx = self.action_tx.clone();
+
+        // Future to register the channel.
+        let register_stream = async move {
+            let (tx, rx) = mpsc::channel(0);
+
+            action_tx
+                .send(NetworkAction::ReceiveFromAll {
+                    type_id: T::TYPE_ID.into(),
+                    output: tx,
+                })
+                .await.expect("Sending action to network task failed.");
+
+            rx
+        };
+
+        register_stream
+            .flatten_stream()
+            .filter_map(|(data, peer)| async move {
+                // Map the (data, peer) stream to (message, peer) by deserializing the messages.
+                match <T as Deserialize>::deserialize(&mut data.reader()) {
+                    Ok(message) => Some((message, peer)),
+                    Err(e) => {
+                        log::error!("Failed to deserialize message: {}", e);
+                        None
+                    },
+                }
+            })
+            .boxed()
+    }
+
     async fn subscribe<T>(&self, topic: &T) -> Result<Pin<Box<dyn Stream<Item = (T::Item, Self::PubsubId)> + Send>>, Self::Error>
     where
         T: Topic + Sync,
@@ -579,8 +624,7 @@ impl NetworkInterface for Network {
         let (tx, rx) = oneshot::channel();
 
         self.action_tx
-            .lock()
-            .await
+            .clone()
             .send(NetworkAction::Subscribe {
                 topic_name: topic.topic(),
                 validate: topic.validate(),
@@ -613,8 +657,7 @@ impl NetworkInterface for Network {
         item.serialize(&mut buf)?;
 
         self.action_tx
-            .lock()
-            .await
+            .clone()
             .send(NetworkAction::Publish {
                 topic_name: topic.topic(),
                 data: buf,
@@ -631,8 +674,7 @@ impl NetworkInterface for Network {
         let (output_tx, output_rx) = oneshot::channel();
 
         self.action_tx
-            .lock()
-            .await
+            .clone()
             .send(NetworkAction::Validate {
                 message_id: id.message_id,
                 source: id.propagation_source,
@@ -650,8 +692,7 @@ impl NetworkInterface for Network {
     {
         let (output_tx, output_rx) = oneshot::channel();
         self.action_tx
-            .lock()
-            .await
+            .clone()
             .send(NetworkAction::DhtGet {
                 key: k.as_ref().to_owned(),
                 output: output_tx,
@@ -676,8 +717,7 @@ impl NetworkInterface for Network {
         v.serialize(&mut buf)?;
 
         self.action_tx
-            .lock()
-            .await
+            .clone()
             .send(NetworkAction::DhtPut {
                 key: k.as_ref().to_owned(),
                 value: buf,
@@ -689,15 +729,14 @@ impl NetworkInterface for Network {
 
     async fn dial_peer(&self, peer_id: PeerId) -> Result<(), NetworkError> {
         let (output_tx, output_rx) = oneshot::channel();
-        self.action_tx.lock().await.send(NetworkAction::Dial { peer_id, output: output_tx }).await?;
+        self.action_tx.clone().send(NetworkAction::Dial { peer_id, output: output_tx }).await?;
         output_rx.await?
     }
 
     async fn dial_address(&self, address: Multiaddr) -> Result<(), NetworkError> {
         let (output_tx, output_rx) = oneshot::channel();
         self.action_tx
-            .lock()
-            .await
+            .clone()
             .send(NetworkAction::DialAddress { address, output: output_tx })
             .await?;
         output_rx.await?
@@ -903,6 +942,8 @@ mod tests {
 
     #[tokio::test]
     async fn both_peers_can_talk_with_each_other() {
+        env_logger::init();
+        
         let (net1, net2) = create_connected_networks().await;
 
         let peer2 = net1.get_peer(net2.local_peer_id().clone()).unwrap();
@@ -931,7 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn connections_are_properly_closed() {
-        //env_logger::init();
+        env_logger::init();
 
         let (net1, net2) = create_connected_networks().await;
 
@@ -941,6 +982,7 @@ mod tests {
         let mut events2 = net2.subscribe_events();
 
         peer2.close(CloseReason::Other);
+        log::debug!("Closed peer");
 
         let event1 = events1.next().await.unwrap().unwrap();
         assert_peer_left(&event1, net2.local_peer_id());

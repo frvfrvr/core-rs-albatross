@@ -24,18 +24,40 @@ impl<T> TokioAdapter<T> {
     pub fn new(inner: T) -> Self {
         Self { inner }
     }
+
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
 }
 
-impl<T> From<T> for TokioAdapter<T> {
-    fn from(inner: T) -> Self {
-        Self::new(inner)
+impl<T: AsyncRead> AsyncRead for TokioAdapter<T> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+        let p = AsyncRead::poll_read(self.project().inner, cx, buf);
+
+        log::trace!("polling socket: {:?}", p);
+
+        p
+    }
+}
+
+impl<T: AsyncWrite> AsyncWrite for TokioAdapter<T> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
+        AsyncWrite::poll_write(self.project().inner, cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        AsyncWrite::poll_flush(self.project().inner, cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        AsyncWrite::poll_close(self.project().inner, cx)
     }
 }
 
 impl<T: AsyncRead> TokioAsyncRead for TokioAdapter<T> {
     /*    
 
-    Note: I accidentally implemented this adapter for Tokio 1.1. Since we will eventuall upgrade
+    Note: I accidentally implemented this adapter for Tokio 1.1. Since we will eventually upgrade
           to this, I'll leave this here :)
 
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<(), Error>> {

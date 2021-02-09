@@ -35,6 +35,12 @@ pub enum Error {
     InvalidLength(u32),
 }
 
+impl Error {
+    pub fn eof() -> Self {
+        Error::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+    }
+}
+
 impl From<SerializingError> for Error {
     fn from(e: SerializingError) -> Self {
         match e {
@@ -48,6 +54,7 @@ impl From<Error> for SendError {
     fn from(e: Error) -> Self {
         match e {
             Error::Io(e) => SendError::Serialization(e.into()),
+            Error::Serialize(e) => SendError::Serialization(e),
             Error::InvalidMagic(_) => SendError::Serialization(SerializingError::InvalidValue),
             Error::InvalidLength(_) => SendError::Serialization(SerializingError::InvalidValue),
         }
@@ -67,11 +74,11 @@ pub struct Header {
 impl Header {
     pub const MAGIC: u32 = 0x4204_2042;
 
-    fn new(type_id: u64, length: usize) -> Self {
+    fn new(type_id: u64) -> Self {
         Self {
             magic: Self::MAGIC,
             type_id: type_id.into(),
-            length: length as u32,
+            length: 0,
             checksum: 0,
         }
     }
@@ -118,7 +125,7 @@ pub struct MessageCodec {
 }
 
 impl MessageCodec {
-    fn verify(&self, data: &BytesMut) -> Result<(), Error> {
+    fn verify(&self, _data: &BytesMut) -> Result<(), Error> {
         // TODO Verify CRC32 checksum
         // Seriously, who had the idea to make the header variable-length with a variable-length field first!
         // We need to skip over the CRC sum when verifying...
@@ -131,58 +138,94 @@ impl Decoder for MessageCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<(MessageType, BytesMut)>, Error> {
-        match &self.state {
-            DecodeState::Head => {
-                // Make a cursor, so we later know how many bytes we read
-                let mut c = Cursor::new(&src);
+        loop {
+            log::trace!("decode: state={:?}", self.state);
+            
+            match &self.state {
+                DecodeState::Head => {
+                    log::trace!("decode: src={:?}", src);
 
-                match Header::deserialize(&mut c) {
-                    // Deserializing the header was successful
-                    Ok(header) => {
-                        // Preliminary header check (we can't verify the checksum yet)
-                        header.preliminary_check()?;
+                    // Reserve enough space for the header
+                    //
+                    // TODO: What's the max size of a header though?
+                    src.reserve(16);
 
-                        // Advance the buffer and reserve space
-                        src.reserve(header.length as usize);
+                    // Make a cursor, so we later know how many bytes we read
+                    let mut c = Cursor::new(&src);
 
-                        // Set decode state to reading the remaining data
-                        self.state = DecodeState::Data {
-                            header,
-                            header_length: c.position() as usize,
-                        };
+                    match Header::deserialize(&mut c) {
+                        Ok(header) => {
+                            // Deserializing the header was successful
 
-                        // Wait for body
-                        return Ok(None)
+                            log::trace!("decode: header={:?}", header);
+
+                            let header_length = c.position() as usize;
+
+                            // Drop the cursor, so we can mut-borrow the `src` buffer again.
+                            drop(c);
+
+                            // Preliminary header check (we can't verify the checksum yet)
+                            header.preliminary_check()?;
+
+                            log::trace!("decode: passed preliminary check");
+
+                            // Reserve enough space
+                            src.reserve(header.length as usize);
+
+                            // Set decode state to reading the remaining data
+                            self.state = DecodeState::Data {
+                                header,
+                                header_length,
+                            };
+
+                            // Don't return but continue in loop to parse the body.
+                        }
+                        Err(SerializingError::IoError(e)) if matches!(e.kind(), io::ErrorKind::UnexpectedEof) => {
+                            // We just need to wait for more data
+                            log::trace!("decode: not enough data");
+                            return Ok(None);
+                        }
+                        Err(e) => {
+                            log::warn!("decode: error: {}", e);
+                            return Err(e.into());
+                        }
                     }
-                    Err(SerializingError::IoError(e)) if matches!(e.kind(), io::ErrorKind::UnexpectedEof) => {
-                        // We just need to wait for more data
-                        Ok(None)
+                }
+                DecodeState::Data { header, header_length } => {
+                    if src.len() >= header.length as usize {
+                        // We have read enough bytes to read the full message
+                        log::trace!("decode: reading message body");
+
+                        let message_type = header.type_id.into();
+                        log::trace!("decode: message_type={}", message_type);
+
+                        // Get buffer of full message
+                        let mut data = src.split_to(header.length as usize);
+                        log::trace!("decode: data={:?}", data);
+
+                        // Verify the message (i.e. checksum)
+                        self.verify(&data)?;
+
+                        // Skip the header
+                        data.advance(*header_length);
+
+                        return Ok(Some((message_type, data)));
                     }
-                    Err(e) => Err(e.into())
-                 }
-            }
-            DecodeState::Data { header, header_length } => {
-                if src.len() >= header.length as usize {
-                    // We have read enough bytes to read the full message
-
-                    let message_type = header.type_id.into();
-
-                    // Get buffer of full message
-                    let data = src.split_to(header.length as usize);
-
-                    // Verify the message (i.e. checksum)
-                    self.verify(&data)?;
-
-                    // Skip the header
-                    data.advance(*header_length);
-
-                    Ok(Some((message_type, data)))
-                }
-                else {
-                    // We still need to read more of the message body
-                    Ok(None)
+                    else {
+                        // We still need to read more of the message body
+                        return Ok(None);
+                    }
                 }
             }
+        }
+    }
+
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<(MessageType, BytesMut)>, Error> {
+        log::trace!("decode_eof");
+
+        match self.decode(buf) {
+            Ok(None) if buf.has_remaining() => Err(Error::eof()),
+            r => r,
         }
     }
 }
@@ -193,14 +236,22 @@ impl<M: Message> Encoder<&M> for MessageCodec {
     type Error = Error;
 
     fn encode(&mut self, message: &M, dst: &mut BytesMut) -> Result<(), Error> {
-        let mut c = dst.as_mut();
+        let mut header = Header::new(M::TYPE_ID);
+        let message_length = header.serialized_size() + message.serialized_size();
+        header.length = message_length as u32;
+
+        dst.reserve(message_length);
+        dst.resize(message_length, 0); // FIXME: Here we initialize the buffer.
+
+        let mut c = Cursor::new(dst.as_mut());
 
         // Write header
-        let header = Header::new(M::TYPE_ID, message.serialized_size());
-        header.serialize(&mut c)?;
+        header.serialize(&mut c).map_err(|e| {log::error!("e1: {}", e) ; e})?;
 
         // Serialize message
-        message.serialize(&mut c)?;
+        message.serialize(&mut c).map_err(|e| {log::error!("e2: {}", e) ; e})?;
+
+        log::trace!("encode: filled dst={:?}", dst);
 
         Ok(())
     }
