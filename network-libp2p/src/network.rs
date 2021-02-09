@@ -64,7 +64,6 @@ impl Config {
         // Hardcoding the minimum number of peers in mesh network before adding more
         // TODO: Maybe change this to a mesh limits configuration argument of this function
         let gossipsub_config = GossipsubConfigBuilder::default()
-            .mesh_n_low(2)
             .validate_messages()
             .build()
             .expect("Invalid Gossipsub config");
