@@ -32,12 +32,16 @@ impl<T> TokioAdapter<T> {
 
 impl<T: AsyncRead> AsyncRead for TokioAdapter<T> {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
-        
+
         let p = AsyncRead::poll_read(self.project().inner, cx, buf);
 
         // If the underlying substream is eof, this should give us Poll::Ready(Ok(0))
-        log::trace!("polled socket in tokio wrapper: {:?}", p);
-        assert!(matches!(p, Poll::Pending), "Not pending");
+        // log::trace!("polled socket in tokio wrapper: {:?}", p);
+        match p {
+            Poll::Pending => {},
+            Poll::Ready(_) => log::error!("Poll_read is: {:?}", p),
+        };
+        // assert!(matches!(p, Poll::Pending), "Not pending");
 
         p
     }

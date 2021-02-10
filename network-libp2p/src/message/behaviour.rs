@@ -14,9 +14,10 @@ use libp2p::{core::ConnectedPoint, PeerId};
 use bytes::Bytes;
 
 use nimiq_network_interface::{
-    network::NetworkEvent, 
+    network::NetworkEvent,
     peer_map::ObservablePeerMap,
     message::MessageType,
+    peer::Peer as PeerInterface,
 };
 
 use super::{
@@ -29,7 +30,7 @@ pub struct MessageConfig {
     // TODO
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct MessageBehaviour {
     config: MessageConfig,
 
@@ -64,26 +65,35 @@ impl MessageBehaviour {
 
     /// Registers a receiver to receive from all peers. This will also make sure that any newly connected peer already
     /// has a receiver (a.k.a. message handler) registered before any messages can be received.
-    /// 
+    ///
     /// # Note
-    /// 
+    ///
     /// When a peer connects, this will be registered in its `MessageDispatch`. Thus you must not register a separate
     /// receiver with the peer.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     ///  - `type_id`: The message type (e.g. `MessageType::new(200)` for `RequestBlockHashes`)
     ///  - `tx`: The sender through which the data of the messages is sent to the handler.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if a receiver was already registered for this message type.
-    /// 
+    ///
     pub fn receive_from_all(&mut self, type_id: MessageType, tx: mpsc::Sender<(Bytes, Arc<Peer>)>) {
+        // the message receivers will be used for all fuiture peers
         if self.message_receivers.get(&type_id).is_some() {
             panic!("A receiver for message type {} is already registered", type_id);
         }
-        self.message_receivers.insert(type_id, tx);
+        self.message_receivers.insert(type_id, tx.clone());
+
+        // however, existing peers do need to be updated for them to be able to act on these messages as well.
+        let mut map: HashMap<MessageType, mpsc::Sender<(Bytes, Arc<Peer>)>> = HashMap::new();
+        map.insert(type_id, tx.clone());
+        for peer in self.peers.get_peers() {
+            peer.receive_raw(map.clone())
+
+        }
     }
 }
 
@@ -107,7 +117,7 @@ impl NetworkBehaviour for MessageBehaviour {
     }
 
     fn inject_connection_established(&mut self, peer_id: &PeerId, connection_id: &ConnectionId, connected_point: &ConnectedPoint) {
-        log::info!(
+        log::error!(
             "Connection established: peer_id={:?}, connection_id={:?}, connected_point={:?}",
             peer_id,
             connection_id,
@@ -118,7 +128,7 @@ impl NetworkBehaviour for MessageBehaviour {
         // messages handlers, that receive from all peers.
         self.events.push_back(NetworkBehaviourAction::NotifyHandler {
             peer_id: peer_id.clone(),
-            handler: NotifyHandler::All, // Really doesn't matter, since we limit the number of connections per PeerId to 1.
+            handler: NotifyHandler::Any, // Really doesn't matter, since we limit the number of connections per PeerId to 1.
             event: HandlerInEvent::PeerConnected {
                 peer_id: peer_id.clone(),
                 outbound: connected_point.is_dialer(),
@@ -163,7 +173,7 @@ impl NetworkBehaviour for MessageBehaviour {
             //log::trace!("MessageBehaviour::poll: Emitting event: {:?}", event);
             return Poll::Ready(event);
         }
-        
+
         // Remember the waker and then return Pending
         if self.waker.is_none() {
             self.waker = Some(cx.waker().clone());

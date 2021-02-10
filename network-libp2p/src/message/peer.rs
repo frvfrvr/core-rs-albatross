@@ -6,14 +6,15 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::{
-    channel::oneshot,
+    channel::{mpsc, oneshot},
     stream::{Stream, StreamExt},
 };
 use libp2p::{swarm::NegotiatedSubstream, PeerId};
 use parking_lot::Mutex;
 
-use nimiq_network_interface::message::Message;
+use nimiq_network_interface::message::{Message, MessageType};
 use nimiq_network_interface::peer::{CloseReason, Peer as PeerInterface, RequestResponse, SendError};
 
 use super::dispatch::{MessageDispatch, SendMessage};
@@ -52,6 +53,12 @@ impl Peer {
 
     pub fn poll_close(&self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         self.dispatch.lock().poll_close(cx)
+    }
+
+
+    pub fn receive_raw(&self, map: impl IntoIterator<Item = (MessageType, mpsc::Sender<(Bytes, Arc<Peer>)>)>) {
+        log::error!("Hacvky way of adding RFA!");
+        self.dispatch.lock().receive_multiple_raw(map)
     }
 }
 
