@@ -9,6 +9,7 @@ use futures::{
     Sink, SinkExt, StreamExt,
 };
 use libp2p::{
+    identify::IdentifyInfo,
     identity::Keypair,
     swarm::{KeepAlive, NegotiatedSubstream, ProtocolsHandler, ProtocolsHandlerEvent, ProtocolsHandlerUpgrErr, SubstreamProtocol},
     Multiaddr,
@@ -31,7 +32,7 @@ use crate::message_codec::{MessageReader, MessageWriter};
 
 #[derive(Clone, Debug)]
 pub enum HandlerInEvent {
-    ObservedAddress(Multiaddr),
+    ObservedAddress(Vec<Multiaddr>),
 }
 
 #[derive(Clone, Debug)]
@@ -242,10 +243,12 @@ impl ProtocolsHandler for DiscoveryHandler {
 
     fn inject_event(&mut self, event: HandlerInEvent) {
         match event {
-            HandlerInEvent::ObservedAddress(address) => {
+            HandlerInEvent::ObservedAddress(addresses) => {
                 // We only use this during handshake and are not waiting on it, so we don't need to wake anything.
-                self.observed_addresses.push(address);
-            }
+                for listen_addr in addresses {
+                    self.observed_addresses.push(listen_addr);
+                }
+            },
         }
     }
 

@@ -104,7 +104,7 @@ pub struct DiscoveryBehaviour {
     clock: Arc<OffsetTime>,
 
     /// Queue with events to emit.
-    events: VecDeque<NetworkBehaviourAction<HandlerInEvent, DiscoveryEvent>>,
+    pub events: VecDeque<NetworkBehaviourAction<HandlerInEvent, DiscoveryEvent>>,
 
     /// Timer to do house-keeping in the peer address book.
     house_keeping_timer: Interval,
@@ -159,15 +159,10 @@ impl NetworkBehaviour for DiscoveryBehaviour {
     }
 
     fn inject_connection_established(&mut self, peer_id: &PeerId, connection_id: &ConnectionId, connected_point: &ConnectedPoint) {
-        log::trace!("inject_connection_established: peer_id={:?}", peer_id);
-
-        let remote_address = connected_point.get_remote_address();
-
-        self.events.push_back(NetworkBehaviourAction::NotifyHandler {
-            peer_id: peer_id.clone(),
-            handler: NotifyHandler::One(*connection_id),
-            event: HandlerInEvent::ObservedAddress(remote_address.clone()),
-        });
+        log::trace!("DiscoveryBehaviour::inject_connection_established:");
+        log::trace!("  - peer_id: {:?}", peer_id);
+        log::trace!("  - connection_id: {:?}", connection_id);
+        log::trace!("  - connected_point: {:?}", connected_point);
     }
 
     fn inject_event(&mut self, peer_id: PeerId, _connection: ConnectionId, event: HandlerOutEvent) {

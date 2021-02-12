@@ -15,10 +15,11 @@ use libp2p::{
     core::{connection::ConnectionLimits, muxing::StreamMuxerBox, network::NetworkInfo, transport::Boxed},
     dns,
     gossipsub::{GossipsubConfig, GossipsubConfigBuilder, GossipsubEvent, GossipsubMessage, IdentTopic, MessageAcceptance, MessageId, TopicHash},
+    identify::IdentifyEvent,
     identity::Keypair,
     kad::{GetRecordOk, KademliaConfig, KademliaEvent, QueryId, QueryResult, Quorum, Record},
     noise,
-    swarm::{SwarmBuilder, SwarmEvent},
+    swarm::{NetworkBehaviourAction, NotifyHandler, SwarmBuilder, SwarmEvent},
     tcp, websocket, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
 use thiserror::Error;
@@ -40,7 +41,7 @@ use nimiq_utils::time::OffsetTime;
 
 use crate::{
     behaviour::{NimiqBehaviour, NimiqEvent, NimiqNetworkBehaviourError},
-    discovery::{behaviour::DiscoveryConfig, peer_contacts::PeerContact},
+    discovery::{behaviour::DiscoveryConfig, handler::HandlerInEvent, peer_contacts::PeerContact},
     limit::behaviour::LimitConfig,
     message::behaviour::MessageConfig,
     message::peer::Peer,
@@ -376,19 +377,13 @@ impl Network {
         min_peers: usize,
     ) {
         match event {
-            SwarmEvent::ConnectionEstablished { peer_id, endpoint, num_established } => {
-                swarm.kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
-
+            SwarmEvent::ConnectionEstablished { peer_id: _, endpoint: _, num_established } => {
                 if !state.is_connected() {
                     log::debug!("Connected to {} peers (waiting for {})", num_established, min_peers);
 
                     if num_established.get() as usize >= min_peers {
                         state.set_connected();
                     }
-
-                    // Bootstrap Kademlia
-                    log::debug!("Bootstrapping DHT");
-                    swarm.kademlia.bootstrap().unwrap();
                 }
             }
 
@@ -460,6 +455,33 @@ impl Network {
                             }
                             GossipsubEvent::Unsubscribed { peer_id, topic } => {
                                 log::debug!("Peer {:?} unsubscribed to topic: {:?}", peer_id, topic);
+                            }
+                        }
+                    }
+                    NimiqEvent::Identify(event) => {
+                        match event {
+                            IdentifyEvent::Received { peer_id, info, observed_addr } => {
+                                log::debug!("Received identifying info from peer {:?} at address {:?}: {:?}", peer_id, observed_addr, info);
+                                for listen_addr in info.listen_addrs.clone() {
+                                    swarm.kademlia.add_address(&peer_id, listen_addr);
+                                }
+
+                                // Bootstrap Kademlia
+                                log::debug!("Bootstrapping DHT");
+                                swarm.kademlia.bootstrap().unwrap();
+
+                                // TODO: Handle this more elegantly
+                                swarm.discovery.events.push_back(NetworkBehaviourAction::NotifyHandler {
+                                    peer_id,
+                                    handler: NotifyHandler::Any,
+                                    event: HandlerInEvent::ObservedAddress(info.listen_addrs),
+                                });
+                            }
+                            IdentifyEvent::Sent { peer_id } => {
+                                log::trace!("Sent identifiyng info to peer {:?}", peer_id);
+                            }
+                            IdentifyEvent::Error { peer_id, error } => {
+                                log::error!("Error while identifying remote peer {:?}: {:?}", peer_id, error);
                             }
                         }
                     }
@@ -1062,5 +1084,12 @@ mod tests {
         assert_eq!(received_message, test_message);
 
         assert!(net1.validate_message(message_id).await.unwrap());
+    }
+
+    async fn test_identify() {
+        let mut net = TestNetwork::new();
+
+        let net1 = net.spawn().await;
+        let net2 = net.spawn().await;
     }
 }
