@@ -297,7 +297,7 @@ impl<N: ValidatorNetwork + 'static> HandelTendermintAdapter<N>
 where
     <<N as ValidatorNetwork>::PeerType as network_interface::peer::Peer>::Id: 'static,
 {
-    pub fn new(
+    pub async fn new(
         validator_id: u16,
         active_validators: Validators,
         block_height: u32,
@@ -311,6 +311,7 @@ where
         let input = Box::pin(
             network
                 .receive::<LevelUpdateMessage<TendermintContribution, TendermintIdentifier>>()
+                .await
                 .filter_map(move |msg| {
                     future::ready(if msg.0.tag.block_number == block_height {
                         Some(msg.0)

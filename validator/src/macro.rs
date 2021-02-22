@@ -61,7 +61,7 @@ pub(crate) struct ProduceMacroBlock {
 }
 
 impl ProduceMacroBlock {
-    pub fn new<TValidatorNetwork: ValidatorNetwork + 'static>(
+    pub async fn new<TValidatorNetwork: ValidatorNetwork + 'static>(
         blockchain: Arc<Blockchain>,
         network: Arc<TValidatorNetwork>,
         block_producer: BlockProducer,
@@ -79,6 +79,8 @@ impl ProduceMacroBlock {
         // get validators for current epoch
         let active_validators = blockchain.current_validators().unwrap();
 
+        let block_number = blockchain.head().block_number();
+
         // create the TendermintOutsideDeps instance
         // Replace here with the actual OutSide Deps instead of the Mocked ones.
         let deps = TendermintInterface::new(
@@ -90,7 +92,7 @@ impl ProduceMacroBlock {
             block_producer,
             blockchain.head().block_number() + 1,
             proposal_stream,
-        );
+        ).await;
 
         let state_opt = state.map(|s| TendermintState {
             step: match s.step {

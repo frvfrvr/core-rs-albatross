@@ -225,10 +225,11 @@ where
             .collect::<Vec<Result<(), Self::Error>>>()
     }
 
-    fn receive<M: Message>(&self) -> MessageStream<M, PeerId<N>> {
+    async fn receive<M: Message>(&self) -> MessageStream<M, PeerId<N>> {
         Box::pin(
             self.network
                 .receive_from_all()
+                .await
                 .map(|(message, peer)| (message, peer.id())),
         )
     }

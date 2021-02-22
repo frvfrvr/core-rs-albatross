@@ -13,6 +13,7 @@ futures = "0.3"
 async-stream = "0.3.0"
 async-trait = "0.1"
 log = "0.4"
+thiserror = "1.0"
 
 nimiq-hash = { path = "../hash" }
 nimiq-primitives = { path = "../primitives", features = ["policy"] }

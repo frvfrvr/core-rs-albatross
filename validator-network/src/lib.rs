@@ -47,7 +47,7 @@ pub trait ValidatorNetwork: Send + Sync {
     ) -> Vec<Result<(), Self::Error>>;
 
     /// Will receive from all connected peers
-    fn receive<M: Message>(&self) -> MessageStream<M, <Self::PeerType as Peer>::Id>;
+    async fn receive<M: Message>(&self) -> MessageStream<M, <Self::PeerType as Peer>::Id>;
 
     async fn publish<TTopic: Topic + Sync>(
         &self,

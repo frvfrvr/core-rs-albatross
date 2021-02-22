@@ -216,8 +216,8 @@ impl<TValidatorNetwork: ValidatorNetwork + 'static> ProduceMicroBlock<TValidator
     }
 }
 
-impl<TValidatorNetwork: ValidatorNetwork + 'static> Stream
-    for ProduceMicroBlock<TValidatorNetwork>
+impl<TValidatorNetwork> Stream for ProduceMicroBlock<TValidatorNetwork>
+    where TValidatorNetwork: ValidatorNetwork + 'static
 {
     type Item = ProduceMicroBlockEvent;
 

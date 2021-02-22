@@ -359,7 +359,7 @@ impl<N: ValidatorNetwork + 'static> TendermintInterface<N> {
         unreachable!()
     }
 
-    pub fn new(
+    pub async fn new(
         validator_key: KeyPair,
         validator_id: u16,
         network: Arc<N>,
@@ -379,7 +379,7 @@ impl<N: ValidatorNetwork + 'static> TendermintInterface<N> {
             block_height,
             network.clone(),
             validator_key.secret_key,
-        );
+        ).await;
 
         // Create the instance and return it.
         Self {

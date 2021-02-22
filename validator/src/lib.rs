@@ -32,3 +32,4 @@ mod micro;
 mod slash;
 mod tendermint_outside_deps;
 pub mod validator;
+pub mod error;

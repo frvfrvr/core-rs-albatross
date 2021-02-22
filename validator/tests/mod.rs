@@ -65,7 +65,7 @@ async fn mock_validator(
     let consensus = mock_consensus(hub, peer_id, genesis_info).await;
     let validator_network = Arc::new(ValidatorNetworkImpl::new(consensus.network.clone()));
     (
-        Validator::new(&consensus, validator_network, signing_key, None),
+        Validator::new(&consensus, validator_network, signing_key, None).await,
         consensus,
     )
 }
@@ -141,6 +141,10 @@ fn validator_for_slot(
         .unwrap()
 }
 
+fn spawn_validators(validators: Vec<Validator>) {
+    tokio::spawn(future::join_all(validators.into_iter().map(|validator| validator.run())));
+}
+
 #[tokio::test]
 async fn one_validator_can_create_micro_blocks() {
     let mut hub = MockHub::default();
@@ -163,7 +167,7 @@ async fn one_validator_can_create_micro_blocks() {
     assert_eq!(consensus1.is_established(), true);
 
     log::debug!("Spawning validator...");
-    tokio::spawn(validator);
+    tokio::spawn(validator.run());
 
     let events1 = consensus1.blockchain.notifier.write().as_stream();
     events1.take(10).for_each(|_| future::ready(())).await;
@@ -179,7 +183,7 @@ async fn four_validators_can_create_micro_blocks() {
 
     let blockchain = Arc::clone(&validators.first().unwrap().consensus.blockchain);
 
-    tokio::spawn(future::join_all(validators));
+    spawn_validators(validators);
 
     let events = blockchain.notifier.write().as_stream();
     time::timeout(
@@ -210,7 +214,7 @@ async fn four_validators_can_view_change() {
     // Freeze time to immediately trigger the view change timeout.
     // time::pause();
 
-    tokio::spawn(future::join_all(validators));
+    spawn_validators(validators);
 
     // Wait for the new block producer to create a block.
     events.next().await;
@@ -328,7 +332,7 @@ async fn validator_can_catch_up() {
     );
 
     // let the validators run.
-    tokio::spawn(future::join_all(validators));
+    spawn_validators(validators);
 
     // while waiting for them to run into the view_change_timeout (10s)
     time::delay_for(Duration::from_secs(11)).await;

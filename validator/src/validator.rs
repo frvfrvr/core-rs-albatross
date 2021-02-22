@@ -1,19 +1,18 @@
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use std::pin::Pin;
 
 use futures::{
-    stream::BoxStream,
-    task::{noop_waker_ref, Context, Poll},
-    Future, StreamExt,
+    task::{Context, Poll, Waker, noop_waker_ref},
+    future::FutureExt,
+    stream::{StreamExt, Stream, BoxStream},
+    ready,
 };
-use tokio::{
-    sync::{broadcast, mpsc},
-    task::JoinHandle,
-};
+use tokio::{sync::{broadcast, mpsc}, task::JoinHandle};
+use pin_project::pin_project;
 
-use block_albatross::{Block, BlockType, SignedTendermintProposal, ViewChange, ViewChangeProof};
-use blockchain_albatross::{AbstractBlockchain, BlockchainEvent, ForkEvent, PushResult};
+use block_albatross::{Block, BlockType, ViewChange, ViewChangeProof, MicroBlock, MacroBlock, MultiSignature, MacroHeader, SignedTendermintProposal};
+use blockchain_albatross::{BlockchainEvent, ForkEvent, PushResult, AbstractBlockchain};
 use bls::CompressedPublicKey;
 use consensus_albatross::{
     sync::block_queue::BlockTopic, Consensus, ConsensusEvent, ConsensusProxy,
@@ -28,6 +27,132 @@ use nimiq_validator_network::ValidatorNetwork;
 use crate::micro::{ProduceMicroBlock, ProduceMicroBlockEvent};
 use crate::r#macro::{PersistedMacroState, ProduceMacroBlock};
 use crate::slash::ForkProofPool;
+use crate::error::Error;
+use crate::tendermint::TendermintState;
+
+
+/// Item produced by `ProduceBlocks`. This is either a block, a macro state update or view change.
+#[derive(Debug)]
+enum ProduceBlocksItem {
+    MacroBlock(MacroBlock),
+    MicroBlock(MicroBlock),
+    MacroStateUpdate(TendermintState<MacroHeader, MultiSignature>),
+    ViewChange(ViewChange, ViewChangeProof),
+}
+
+/// State of `ProduceBlocks`. Stores whether we're currently inactive, producing a macro block or
+/// micro block.
+enum ProduceBlocksState<TValidatorNetwork> {
+    Inactive,
+    Macro(ProduceMacroBlock),
+    Micro(ProduceMicroBlock<TValidatorNetwork>),
+}
+
+/// Wrapper stream to produce blocks or related events. This will continiously produce macro blocks,
+/// micro blocks, macro state updates, or view changes from the underlying `ProduceMacroBlock`s and
+/// `ProduceMicroBlocks`.
+/// 
+/// To start producing a macro or micro block, `set_macro` or `set_micro` have to be called with the
+/// underlying producer.
+/// 
+/// Once the inner producer stream terminates, this will return `Poll::Pending` until a new producer
+/// is set.
+#[pin_project]
+struct ProduceBlocks<TValidatorNetwork>
+{
+    state: ProduceBlocksState<TValidatorNetwork>,
+    waker: Option<Waker>,
+}
+
+impl<TValidatorNetwork> Default for ProduceBlocks<TValidatorNetwork> {
+    fn default() -> Self {
+        ProduceBlocks {
+            state: ProduceBlocksState::Inactive,
+            waker: None,
+        }
+    }
+}
+
+impl<TValidatorNetwork> ProduceBlocks<TValidatorNetwork> {
+    /// Set block production to inactive. This will cause the stream to return Poll::Pending
+    pub fn set_inactive(&mut self) {
+        self.state = ProduceBlocksState::Inactive;
+        self.wake();
+    }
+
+    /// Set block production to produce a macro block.
+    pub fn set_macro(&mut self, macro_block_producer: ProduceMacroBlock) {
+        self.state = ProduceBlocksState::Macro(macro_block_producer);
+        self.wake();
+    }
+
+    /// Set block production to produce a micro block
+    pub fn set_micro(&mut self, micro_block_producer: ProduceMicroBlock<TValidatorNetwork>) {
+        self.state = ProduceBlocksState::Micro(micro_block_producer);
+        self.wake();
+    }
+
+    fn wake(&mut self) {
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+impl<TValidatorNetwork> Stream for ProduceBlocks<TValidatorNetwork>
+where
+    TValidatorNetwork: ValidatorNetwork + 'static,
+{
+    type Item = Result<ProduceBlocksItem, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        match this.state {
+            ProduceBlocksState::Inactive => {
+                // Do nothing here, set waker later and return Poll::Pending
+            }
+            ProduceBlocksState::Macro(macro_block_producer) => {
+                while let Some(event) = ready!(macro_block_producer.poll_next_unpin(cx)) {
+                    match event {
+                        TendermintReturn::Error(e) => {
+                            return Poll::Ready(Some(Err(e.into())));
+                        }
+                        TendermintReturn::Result(block) => {
+                            return Poll::Ready(Some(Ok(ProduceBlocksItem::MacroBlock(block))));
+                        }
+                        TendermintReturn::StateUpdate(update) => {
+                            return Poll::Ready(Some(Ok(ProduceBlocksItem::MacroStateUpdate(update))));
+                        }
+                    }
+                }
+
+                // Block production finished, so we can set ourself to `Inactive`.
+            },
+            ProduceBlocksState::Micro(micro_block_producer) => {
+                while let Some(event) = ready!(micro_block_producer.poll_next_unpin(cx)) {
+                    match event {
+                        ProduceMicroBlockEvent::MicroBlock(block) => {
+                            return Poll::Ready(Some(Ok(ProduceBlocksItem::MicroBlock(block))));
+                        }
+                        ProduceMicroBlockEvent::ViewChange(view_change, view_change_proof) => {
+                            return Poll::Ready(Some(Ok(ProduceBlocksItem::ViewChange(view_change, view_change_proof))));
+                        }
+                    }
+                }
+
+                // Block production finished, so we can set ourself to `Inactive`.
+                *this.state = ProduceBlocksState::Inactive;
+            }
+        }
+        
+        // We either are already `Inactive`, or we just finished the inner block production.
+        // Thus we return `Poll::Pending` until we have a new block production.
+
+        *this.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
 
 pub struct ProposalTopic;
 impl Topic for ProposalTopic {
@@ -88,14 +213,13 @@ pub struct Validator<TNetwork: Network, TValidatorNetwork: ValidatorNetwork + 's
     epoch_state: Option<ActiveEpochState>,
     blockchain_state: BlockchainState,
 
-    macro_producer: Option<ProduceMacroBlock>,
+    
     macro_state: Option<PersistedMacroState<TValidatorNetwork>>,
-
-    micro_producer: Option<ProduceMicroBlock<TValidatorNetwork>>,
     micro_state: ProduceMicroBlockState,
+    block_producer: ProduceBlocks<TValidatorNetwork>,
 }
 
-impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
+impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork + 'static>
     Validator<TNetwork, TValidatorNetwork>
 {
     const MACRO_STATE_DB_NAME: &'static str = "ValidatorState";
@@ -103,7 +227,7 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
     const VIEW_CHANGE_DELAY: Duration = Duration::from_secs(10);
     const FORK_PROOFS_MAX_SIZE: usize = 1_000; // bytes
 
-    pub fn new(
+    pub async fn new(
         consensus: &Consensus<TNetwork>,
         network: Arc<TValidatorNetwork>,
         signing_key: bls::KeyPair,
@@ -155,19 +279,17 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
             epoch_state: None,
             blockchain_state,
 
-            macro_producer: None,
             macro_state,
-
-            micro_producer: None,
             micro_state,
+            block_producer: ProduceBlocks::default(),
         };
-        this.init();
+        this.init().await;
         this
     }
 
-    fn init(&mut self) {
+    async fn init(&mut self) {
         self.init_epoch();
-        self.init_block_producer();
+        self.init_block_producer().await;
     }
 
     fn init_epoch(&mut self) {
@@ -213,9 +335,8 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
         });
     }
 
-    fn init_block_producer(&mut self) {
-        self.macro_producer = None;
-        self.micro_producer = None;
+    async fn init_block_producer(&mut self) {
+        self.block_producer.set_inactive();
 
         log::debug!("Initializing block producer");
 
@@ -224,8 +345,19 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
             return;
         }
 
-        let _lock = self.consensus.blockchain.lock();
-        match self.consensus.blockchain.get_next_block_type(None) {
+        let next_block_type;
+        let block_number;
+        let next_view_number;
+
+        {
+            // TODO: use state lock guard instead of acquiring push lock?
+            let _lock = self.consensus.blockchain.lock();
+            next_block_type = self.consensus.blockchain.get_next_block_type(None);
+            block_number = self.consensus.blockchain.block_number();
+            next_view_number = self.consensus.blockchain.head().next_view_number();
+        }
+
+        match next_block_type {
             BlockType::Macro => {
                 let block_producer = BlockProducer::new(
                     self.consensus.blockchain.clone(),
@@ -287,7 +419,7 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
                     .macro_state
                     .take()
                     .map(|state| {
-                        if state.height == self.consensus.blockchain.block_number() + 1 {
+                        if state.height == block_number + 1 {
                             Some(state)
                         } else {
                             None
@@ -295,19 +427,26 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
                     })
                     .flatten();
 
-                self.macro_producer = Some(ProduceMacroBlock::new(
-                    self.consensus.blockchain.clone(),
-                    self.network.clone(),
+                let blockchain = self.consensus.blockchain.clone();
+                let network = self.network.clone();
+                let signing_key = self.signing_key.clone();
+                let validator_id = self.validator_id();
+
+                let macro_producer = ProduceMacroBlock::new(
+                    blockchain,
+                    network,
                     block_producer,
-                    self.signing_key.clone(),
-                    self.validator_id(),
+                    signing_key,
+                    validator_id,
                     state,
                     receiver.boxed(),
-                ));
+                ).await;
+
+                self.block_producer.set_macro(macro_producer);
             }
             BlockType::Micro => {
                 self.micro_state = ProduceMicroBlockState {
-                    view_number: self.consensus.blockchain.head().next_view_number(),
+                    view_number: next_view_number,
                     view_change_proof: None,
                     view_change: None,
                 };
@@ -316,7 +455,8 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
                     .blockchain_state
                     .fork_proofs
                     .get_fork_proofs_for_block(Self::FORK_PROOFS_MAX_SIZE);
-                self.micro_producer = Some(ProduceMicroBlock::new(
+
+                let micro_producer = ProduceMicroBlock::new(
                     Arc::clone(&self.consensus.blockchain),
                     Arc::clone(&self.consensus.mempool),
                     Arc::clone(&self.network),
@@ -327,12 +467,14 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
                     self.micro_state.view_change_proof.clone(),
                     self.micro_state.view_change.clone(),
                     Self::VIEW_CHANGE_DELAY,
-                ));
+                );
+
+                self.block_producer.set_micro(micro_producer);
             }
         }
     }
 
-    fn on_blockchain_event(&mut self, event: BlockchainEvent) {
+    async fn on_blockchain_event(&mut self, event: BlockchainEvent) {
         match event {
             BlockchainEvent::Extended(ref hash) => self.on_blockchain_extended(hash),
             BlockchainEvent::Finalized(ref hash) => self.on_blockchain_extended(hash),
@@ -345,7 +487,7 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
             }
         }
 
-        self.init_block_producer();
+        self.init_block_producer().await;
     }
 
     fn on_blockchain_extended(&mut self, hash: &Blake2bHash) {
@@ -376,111 +518,6 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
         };
     }
 
-    fn poll_macro(&mut self, cx: &mut Context<'_>) {
-        let macro_producer = self.macro_producer.as_mut().unwrap();
-        while let Poll::Ready(Some(event)) = macro_producer.poll_next_unpin(cx) {
-            match event {
-                TendermintReturn::Error(_err) => {}
-                TendermintReturn::Result(block) => {
-                    // If the event is a result meaning the next macro block was produced we push it onto our local chain
-                    let block_copy = block.clone();
-                    let result = self
-                        .consensus
-                        .blockchain
-                        .push(Block::Macro(block))
-                        .map_err(|e| error!("Failed to push macro block onto the chain: {:?}", e))
-                        .ok();
-                    if result == Some(PushResult::Extended)
-                        || result == Some(PushResult::Rebranched)
-                    {
-                        if block_copy.is_election_block() {
-                            info!(
-                                "Publishing Election MacroBlock #{}",
-                                &block_copy.header.block_number
-                            );
-                        } else {
-                            info!(
-                                "Publishing Checkpoint MacroBlock #{}",
-                                &block_copy.header.block_number
-                            );
-                        }
-                        // todo get rid of spawn
-                        let nw = self.network.clone();
-                        tokio::spawn(async move {
-                            trace!("publishing macro block: {:?}", &block_copy);
-                            if nw
-                                .publish(&BlockTopic, Block::Macro(block_copy))
-                                .await
-                                .is_err()
-                            {
-                                error!("Failed to publish Block");
-                            }
-                        });
-                    }
-                }
-                // in case of a new state update we need to store th enew version of it disregarding any old state which potentially still lingers.
-                TendermintReturn::StateUpdate(update) => {
-                    let mut write_transaction = WriteTransaction::new(&self.env);
-                    let persistable_state = PersistedMacroState::<TValidatorNetwork> {
-                        height: self.consensus.blockchain.block_number() + 1,
-                        step: update.step.into(),
-                        round: update.round,
-                        locked_round: update.locked_round,
-                        locked_value: update.locked_value,
-                        valid_round: update.valid_round,
-                        valid_value: update.valid_value,
-                    };
-
-                    write_transaction.put::<str, Vec<u8>>(
-                        &self.database,
-                        Self::MACRO_STATE_KEY,
-                        &beserial::Serialize::serialize_to_vec(&persistable_state),
-                    );
-
-                    self.macro_state = Some(persistable_state);
-                }
-            }
-        }
-    }
-
-    fn poll_micro(&mut self, cx: &mut Context<'_>) {
-        let micro_producer = self.micro_producer.as_mut().unwrap();
-        while let Poll::Ready(Some(event)) = micro_producer.poll_next_unpin(cx) {
-            match event {
-                ProduceMicroBlockEvent::MicroBlock(block) => {
-                    let block_copy = block.clone();
-                    let result = self
-                        .consensus
-                        .blockchain
-                        .push(Block::Micro(block))
-                        .map_err(|e| error!("Failed to push our block onto the chain: {:?}", e))
-                        .ok();
-                    if result == Some(PushResult::Extended)
-                        || result == Some(PushResult::Rebranched)
-                    {
-                        // todo get rid of spawn
-                        let nw = self.network.clone();
-                        tokio::spawn(async move {
-                            trace!("publishing micro block: {:?}", &block_copy);
-                            if nw
-                                .publish(&BlockTopic, Block::Micro(block_copy))
-                                .await
-                                .is_err()
-                            {
-                                error!("Failed to publish Block");
-                            }
-                        });
-                    }
-                }
-                ProduceMicroBlockEvent::ViewChange(view_change, view_change_proof) => {
-                    self.micro_state.view_number = view_change.new_view_number; // needed?
-                    self.micro_state.view_change_proof = Some(view_change_proof);
-                    self.micro_state.view_change = Some(view_change);
-                }
-            }
-        }
-    }
-
     fn is_active(&self) -> bool {
         self.epoch_state.is_some()
     }
@@ -495,47 +532,132 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
     pub fn signing_key(&self) -> bls::KeyPair {
         self.signing_key.clone()
     }
-}
 
-impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork> Future
-    for Validator<TNetwork, TValidatorNetwork>
-{
-    type Output = ();
+    /// Runs the validator to completion.
+    /// 
+    /// This only terminates if an error occurs, e.g. an event stream was closed. Some errors are not
+    /// propagates, e.g. when it fails to propagate a block over the network.
+    /// 
+    /// # TODO
+    /// 
+    /// - How do we gracefully shut down a validator?
+    /// 
+    pub async fn run(mut self) -> Result<(), Error> {
+        loop {
+            futures::select! {
+                // When consensus is established we initialize the epoch and block production
+                event = self.consensus_event_rx.recv().fuse() => {
+                    match event {
+                        Ok(ConsensusEvent::Established) => {
+                            self.init().await;
+                        }
+                        Ok(_) => {},
+                        Err(broadcast::RecvError::Closed) => return Err(Error::ConsensusEventsClosed),
+                        Err(broadcast::RecvError::Lagged(_)) => return Err(Error::ConsensusEventsLagged),
+                    }
+                    
+                },
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Process consensus updates.
-        while let Poll::Ready(Some(event)) = self.consensus_event_rx.poll_next_unpin(cx) {
-            match event {
-                Ok(ConsensusEvent::Established) => self.init(),
-                Err(_) => return Poll::Ready(()),
-                _ => {}
+                // If consensus is established forward blockchain events
+                event = self.blockchain_event_rx.recv().fuse() => {
+                    match event {
+                        Some(event) => {
+                            if self.consensus.is_established() {
+                                self.on_blockchain_event(event).await;
+                            }
+                        }
+                        None => return Err(Error::BlockchainEventsClosed),
+                    }
+                },
+
+                // If consensus is established forward fork events
+                event = self.fork_event_rx.recv().fuse() => {
+                    match event {
+                        Some(event) => {
+                            if self.consensus.is_established() {
+                                self.on_fork_event(event);
+                            }
+                        }
+                        None => return Err(Error::ForkEventsClosed),
+                    }
+                },
+
+                // Get events from block producer. This either gives us produced blocks, view changes,
+                // or macro state updates. Blocks are pushed to the blockchain and propagated to the
+                // network. View changes update the micro state.
+                item = self.block_producer.next().fuse() => {
+                    match item {
+                        Some(Ok(ProduceBlocksItem::MacroBlock(macro_block))) => {
+                            // If the event is a result meaning the next macro block was produced we push it onto our local chain
+                            let result = self.consensus
+                                .blockchain
+                                .push(Block::Macro(macro_block.clone()));
+
+                            match result {
+                                Ok(PushResult::Extended) | Ok(PushResult::Rebranched) => {
+                                    if macro_block.is_election_block() {
+                                        info!("Publishing Election MacroBlock #{}", &macro_block.header.block_number);
+                                    } else {
+                                        info!("Publishing Checkpoint MacroBlock #{}", &macro_block.header.block_number);
+                                    }
+    
+                                    if let Err(e) = self.network.publish(&BlockTopic, Block::Macro(macro_block)).await {
+                                        log::warn!("Failed to publish block: {}", e);
+                                    }
+                                },
+                                Err(e) => log::warn!("Failed to push macro block: {}", e),
+                                _ => {},
+                            }
+                        },
+                        Some(Ok(ProduceBlocksItem::MicroBlock(micro_block))) => {
+                            let result = self.consensus
+                                .blockchain
+                                .push(Block::Micro(micro_block.clone()));
+
+                            match result {
+                                Ok(PushResult::Extended) | Ok(PushResult::Rebranched) => {
+                                    info!("Publishing micro block: {:?}", micro_block);
+
+                                    if let Err(e) = self.network.publish(&BlockTopic, Block::Micro(micro_block)).await {
+                                        log::warn!("Failed to publish block: {}", e);
+                                    }
+                                },
+                                Err(e) => log::warn!("Failed to push micro block: {}", e),
+                                _ => {},
+                            }
+                        },
+                        Some(Ok(ProduceBlocksItem::MacroStateUpdate(update))) => {
+                            let mut write_transaction = WriteTransaction::new(&self.env);
+                            let persistable_state = PersistedMacroState::<TValidatorNetwork> {
+                                height: self.consensus.blockchain.block_number() + 1,
+                                step: update.step.into(),
+                                round: update.round,
+                                locked_round: update.locked_round,
+                                locked_value: update.locked_value,
+                                valid_round: update.valid_round,
+                                valid_value: update.valid_value,
+                            };
+
+                            write_transaction.put::<str, Vec<u8>>(
+                                &self.database,
+                                Self::MACRO_STATE_KEY,
+                                &beserial::Serialize::serialize_to_vec(&persistable_state),
+                            );
+
+                            self.macro_state = Some(persistable_state);
+                        },
+                        Some(Ok(ProduceBlocksItem::ViewChange(view_change, view_change_proof))) => {
+                            self.micro_state.view_number = view_change.new_view_number; // needed?
+                            self.micro_state.view_change_proof = Some(view_change_proof);
+                            self.micro_state.view_change = Some(view_change);
+                        },
+                        Some(Err(e)) => {
+                            return Err(e.into());
+                        }
+                        None => unreachable!(),
+                    }
+                },
             }
         }
-
-        // Process blockchain updates.
-        while let Poll::Ready(Some(event)) = self.blockchain_event_rx.poll_next_unpin(cx) {
-            if self.consensus.is_established() {
-                self.on_blockchain_event(event);
-            }
-        }
-
-        // Process fork events.
-        while let Poll::Ready(Some(event)) = self.fork_event_rx.poll_next_unpin(cx) {
-            if self.consensus.is_established() {
-                self.on_fork_event(event);
-            }
-        }
-
-        // If we are an active validator, participate in block production.
-        if self.consensus.is_established() && self.is_active() {
-            if self.macro_producer.is_some() {
-                self.poll_macro(cx);
-            }
-            if self.micro_producer.is_some() {
-                self.poll_micro(cx);
-            }
-        }
-
-        Poll::Pending
     }
 }

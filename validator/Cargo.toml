@@ -14,7 +14,6 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 async-trait = "0.1"
-failure = "0.1"
 futures = "0.3"
 futures-cpupool = "0.1"
 futures-locks = "0.6"
@@ -24,6 +23,8 @@ log = "0.4"
 parking_lot = "0.9"
 rand = "0.7"
 tokio = { version = "0.2", features = ["rt-core", "time"] }
+thiserror = "1.0"
+pin-project = "1.0"
 
 beserial = { path = "../beserial" }
 beserial_derive = { path = "../beserial/beserial_derive" }

@@ -265,6 +265,7 @@ impl ViewChangeAggregation {
                 Box::pin(
                     network
                         .receive::<LevelUpdateMessage<SignedViewChangeMessage, ViewChange>>()
+                        .await
                         .map(move |msg| msg.0),
                 ),
                 view_change.new_view_number,

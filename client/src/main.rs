@@ -92,7 +92,7 @@ async fn main_inner() -> Result<(), Error> {
     // Start validator
     if let Some(validator) = client.validator() {
         log::info!("Spawning validator");
-        tokio::spawn(validator);
+        tokio::spawn(validator.run());
     } else {
         todo!("Must use validator");
     }

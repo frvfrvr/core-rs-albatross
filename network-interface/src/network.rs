@@ -81,7 +81,7 @@ pub trait Network: Send + Sync + 'static {
     }
 
     /// Should panic if there is already a non-closed sink registered for a message type.
-    fn receive_from_all<'a, T: Message>(&self) -> BoxStream<'a, (T, Arc<Self::PeerType>)> {
+    async fn receive_from_all<'a, T: Message>(&self) -> BoxStream<'a, (T, Arc<Self::PeerType>)> {
         ReceiveFromAll::new(self).boxed()
     }
 

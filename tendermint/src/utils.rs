@@ -1,9 +1,15 @@
-use crate::state::TendermintState;
-use crate::ProofTrait;
+use std::collections::BTreeMap;
+
+use thiserror::Error;
+
 use nimiq_block_albatross::TendermintStep;
 use nimiq_hash::Blake2bHash;
 use nimiq_primitives::policy::TWO_THIRD_SLOTS;
-use std::collections::BTreeMap;
+
+use crate::state::TendermintState;
+use crate::ProofTrait;
+
+
 
 /// Represents the current stage of the Tendermint state machine. Each stage corresponds to a
 /// function of our implementation of the Tendermint protocol (see protocol.rs).
@@ -100,14 +106,21 @@ pub enum TendermintReturn<ProposalTy, ProofTy, ResultTy> {
 }
 
 /// An enum containing possible errors that can happen to Tendermint.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Error, Eq, PartialEq)]
 pub enum TendermintError {
+    #[error("Bad initialized state")]
     BadInitState,
+    #[error("Aggregation error")]
     AggregationError,
+    #[error("Aggregation does not exist")]
     AggregationDoesNotExist,
+    #[error("Proposal broadcast error")]
     ProposalBroadcastError,
+    #[error("Can not receive proposal")]
     CannotReceiveProposal,
+    #[error("Can not produce proposal")]
     CannotProduceProposal,
+    #[error("Can not assembler block")]
     CannotAssembleBlock,
 }
 

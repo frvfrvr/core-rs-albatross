@@ -147,10 +147,10 @@ impl<N: Network> Consensus<N> {
             block_stream,
             tx_stream,
             sync_protocol,
-        )
+        ).await
     }
 
-    pub fn new(
+    pub async fn new(
         env: Environment,
         blockchain: Arc<Blockchain>,
         mempool: Arc<Mempool>,
@@ -171,7 +171,7 @@ impl<N: Network> Consensus<N> {
             block_stream,
         );
 
-        Self::init_network_requests(&network, &blockchain);
+        Self::init_network_requests(&network, &blockchain).await;
 
         Consensus {
             blockchain,

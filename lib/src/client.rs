@@ -190,14 +190,14 @@ impl ClientInner {
                     validator_network,
                     validator_key,
                     validator_wallet_key,
-                );
+                ).await;
 
                 Some(validator)
             } else {
                 None
             }
         };
-
+        
         Ok((
             ClientInner {
                 environment,

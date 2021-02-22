@@ -288,6 +288,7 @@ async fn it_can_aggregate() {
             contribution,
             Box::pin(
                 net.receive_from_all::<LevelUpdateMessage<Contribution, u8>>()
+                    .await
                     .map(move |msg| msg.0.update),
             ),
             Box::new(NetworkSink {
@@ -325,6 +326,7 @@ async fn it_can_aggregate() {
         contribution,
         Box::pin(
             net.receive_from_all::<LevelUpdateMessage<Contribution, u8>>()
+                .await
                 .map(move |msg| msg.0.update),
         ),
         Box::new(NetworkSink {

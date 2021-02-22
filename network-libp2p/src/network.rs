@@ -126,6 +126,9 @@ pub enum NetworkError {
     #[error("Gossipsub Subscription error: {0:?}")]
     GossipsubSubscription(libp2p::gossipsub::error::SubscriptionError),
 
+    #[error("Transport error: {0}")]
+    Transport(#[from] libp2p::TransportError<std::io::Error>),
+
     #[error("Already subscribed to topic: {topic_name}")]
     AlreadySubscribed { topic_name: String },
 }
@@ -202,7 +205,11 @@ pub enum NetworkAction {
     },
     ReceiveFromAll {
         type_id: MessageType,
-        output: mpsc::Sender<(Bytes, Arc<Peer>)>,
+        output: oneshot::Sender<mpsc::Receiver<(Bytes, Arc<Peer>)>>,
+    },
+    AcceptIncoming {
+        listen_addresses: Vec<Multiaddr>,
+        output: oneshot::Sender<Result<(), NetworkError>>
     },
     ListenOnAddresses {
         listen_addresses: Vec<Multiaddr>,
@@ -264,7 +271,6 @@ impl Network {
     ///
     /// # Arguments
     ///
-    ///  - `listen_addresses`: The multi-addresses on which to listen for inbound connections.
     ///  - `clock`: The clock that is used to establish the network time. The discovery behaviour will determine the
     ///             offset by exchanging their wall-time with other peers.
     ///  - `config`: The network configuration, containing key pair, and other behaviour-specific configuration.
@@ -347,11 +353,9 @@ impl Network {
             .with_max_established_per_peer(Some(MAX_CONNECTIONS_PER_PEER));
 
         // TODO add proper config
-        let swarm = SwarmBuilder::new(transport, behaviour, local_peer_id)
+        SwarmBuilder::new(transport, behaviour, local_peer_id)
             .connection_limits(limits)
-            .build();
-
-        swarm
+            .build()
     }
 
     pub fn local_peer_id(&self) -> &PeerId {
@@ -700,7 +704,23 @@ impl Network {
                     .ok();
             }
             NetworkAction::ReceiveFromAll { type_id, output } => {
-                swarm.message.receive_from_all(type_id, output);
+                let (tx, rx) = mpsc::channel(0);
+                swarm.message.receive_from_all(type_id, tx);
+                output.send(rx).ok();
+            }
+            NetworkAction::AcceptIncoming { listen_addresses, output } => {
+                let mut result = Ok(());
+
+                for listen_addr in listen_addresses {
+                    tracing::debug!("Listening on: {}", listen_addr);
+
+                    if let Err(e) = Swarm::listen_on(swarm, listen_addr) {    
+                        result = Err(e.into());
+                        break;
+                    }
+                }
+
+                output.send(result).ok();
             }
             NetworkAction::ListenOnAddresses { listen_addresses } => {
                 for listen_address in listen_addresses {
@@ -763,26 +783,21 @@ impl NetworkInterface for Network {
 
     /// Implements `receive_from_all`, but instead of selecting over all peer message streams, we register a channel in
     /// the network. The sender is copied to new peers when they're instantiated.
-    fn receive_from_all<'a, T: Message>(&self) -> BoxStream<'a, (T, Arc<Peer>)> {
-        let mut action_tx = self.action_tx.clone();
+    async fn receive_from_all<'a, T: Message>(&self) -> BoxStream<'a, (T, Arc<Peer>)> {
+        let (tx, rx) = oneshot::channel();
 
-        // Future to register the channel.
-        let register_stream = async move {
-            let (tx, rx) = mpsc::channel(0);
+        self.action_tx
+            .clone()
+            .send(NetworkAction::ReceiveFromAll {
+                type_id: T::TYPE_ID.into(),
+                output: tx,
+            })
+            .await
+            .expect("Sending action to network task failed.");
 
-            action_tx
-                .send(NetworkAction::ReceiveFromAll {
-                    type_id: T::TYPE_ID.into(),
-                    output: tx,
-                })
-                .await
-                .expect("Sending action to network task failed.");
+        let rx = rx.await.expect("Failed to receive response from network task");
 
-            rx
-        };
-
-        register_stream
-            .flatten_stream()
+        rx
             .filter_map(|(data, peer)| async move {
                 // Map the (data, peer) stream to (message, peer) by deserializing the messages.
                 match <T as Deserialize>::deserialize(&mut data.reader()) {
@@ -1273,7 +1288,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_gossipsub() {
-        tracing_subscriber::fmt::init();
+        //tracing_subscriber::fmt::init();
 
         let mut net = TestNetwork::new();
 

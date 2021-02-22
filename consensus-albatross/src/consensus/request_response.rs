@@ -13,10 +13,10 @@ use blockchain_albatross::Blockchain;
 use network_interface::prelude::{Network, Peer};
 
 impl<N: Network> Consensus<N> {
-    pub(super) fn init_network_requests(network: &Arc<N>, blockchain: &Arc<Blockchain>) {
+    pub(super) async fn init_network_requests(network: &Arc<N>, blockchain: &Arc<Blockchain>) {
         let blockchain_outer = blockchain;
         let blockchain = Arc::clone(blockchain_outer);
-        let mut stream = network.receive_from_all::<RequestBlockHashes>();
+        let mut stream = network.receive_from_all::<RequestBlockHashes>().await;
         tokio::spawn(async move {
             while let Some((msg, peer)) = stream.next().await {
                 trace!(
@@ -33,7 +33,7 @@ impl<N: Network> Consensus<N> {
         });
 
         let blockchain = Arc::clone(blockchain_outer);
-        let mut stream = network.receive_from_all::<RequestBatchSet>();
+        let mut stream = network.receive_from_all::<RequestBatchSet>().await;
         tokio::spawn(async move {
             while let Some((msg, peer)) = stream.next().await {
                 trace!(
@@ -50,7 +50,7 @@ impl<N: Network> Consensus<N> {
         });
 
         let blockchain = Arc::clone(blockchain_outer);
-        let mut stream = network.receive_from_all::<RequestHistoryChunk>();
+        let mut stream = network.receive_from_all::<RequestHistoryChunk>().await;
         tokio::spawn(async move {
             while let Some((msg, peer)) = stream.next().await {
                 trace!(
@@ -68,7 +68,7 @@ impl<N: Network> Consensus<N> {
         });
 
         let blockchain = Arc::clone(blockchain_outer);
-        let mut stream = network.receive_from_all::<RequestBlock>();
+        let mut stream = network.receive_from_all::<RequestBlock>().await;
         tokio::spawn(async move {
             while let Some((msg, peer)) = stream.next().await {
                 trace!(
@@ -85,7 +85,7 @@ impl<N: Network> Consensus<N> {
         });
 
         let blockchain = Arc::clone(blockchain_outer);
-        let mut stream = network.receive_from_all::<RequestMissingBlocks>();
+        let mut stream = network.receive_from_all::<RequestMissingBlocks>().await;
         tokio::spawn(async move {
             while let Some((msg, peer)) = stream.next().await {
                 trace!(
@@ -102,7 +102,7 @@ impl<N: Network> Consensus<N> {
         });
 
         let blockchain = Arc::clone(blockchain_outer);
-        let mut stream = network.receive_from_all::<RequestHead>();
+        let mut stream = network.receive_from_all::<RequestHead>().await;
         tokio::spawn(async move {
             while let Some((msg, peer)) = stream.next().await {
                 trace!("[REQUEST_HEAD] received from {:?}", peer.id());
