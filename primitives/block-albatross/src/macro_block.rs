@@ -157,12 +157,10 @@ pub fn create_pk_tree_root(slots: &Validators) -> Vec<u8> {
                 .get_validator(index as u16)
                 // then get its public key
                 .public_key
-                // get the compressed version of the public key
-                .compressed()
-                // and uncompress it
+                // uncompress it
                 .uncompress()
                 // this as well must succeed for the validator to work at all.
-                .expect("failed to retrieve public_key")
+                .expect("Failed to retrieve public_key")
                 // finally get the G2Projective as implicit type.
                 .public_key
         })

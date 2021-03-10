@@ -71,10 +71,8 @@ impl TendermintProof {
             let pk = validators
                 .get_validator(i)
                 .public_key
-                .compressed()
                 .uncompress()
-                .unwrap();
-
+                .expect("Failed to retrieve public_key");
             if self.sig.signers.contains(i as usize) {
                 agg_pk.aggregate(&pk);
             }
