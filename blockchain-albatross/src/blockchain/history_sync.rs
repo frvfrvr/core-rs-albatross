@@ -147,11 +147,14 @@ impl Blockchain {
         // Get the block hash.
         let block_hash = block.hash();
 
+        // Get the block number.
+        let block_number = block.block_number();
+
         // Calculate the cumulative transaction fees for the current batch. This is necessary to
         // create the chain info for the block.
         let mut cum_tx_fees = Coin::ZERO;
 
-        let current_batch = policy::batch_at(block.block_number());
+        let current_batch = policy::batch_at(block_number);
 
         for i in (0..ext_txs.len()).rev() {
             if policy::batch_at(ext_txs[i].block_number) != current_batch {
@@ -251,7 +254,7 @@ impl Blockchain {
         // Store the new extended transactions into the History tree.
         self.history_store.add_to_history(
             &mut txn,
-            policy::epoch_at(block.block_number()),
+            policy::epoch_at(block_number),
             &ext_txs[first_new_ext_tx..],
         );
 
@@ -285,11 +288,11 @@ impl Blockchain {
         if is_election_block {
             self.notifier
                 .read()
-                .notify(BlockchainEvent::EpochFinalized(block_hash));
+                .notify(BlockchainEvent::EpochFinalized(block_hash, block_number));
         } else {
             self.notifier
                 .read()
-                .notify(BlockchainEvent::Finalized(block_hash));
+                .notify(BlockchainEvent::Finalized(block_hash, block_number));
         }
 
         // Return result.

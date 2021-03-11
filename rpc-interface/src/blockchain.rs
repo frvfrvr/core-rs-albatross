@@ -1,11 +1,18 @@
 use async_trait::async_trait;
 
+use beserial::Serialize;
 use futures::stream::BoxStream;
 use nimiq_account::Account;
 use nimiq_hash::Blake2bHash;
 use nimiq_keys::Address;
 
 use crate::types::{Block, OrLatest, SlashedSlots, Slot, Stakes};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockStream {
+    hash: Blake2bHash,
+    height: u32,
+}
 
 #[cfg_attr(
     feature = "proxy",
@@ -51,7 +58,7 @@ pub trait BlockchainInterface {
     async fn list_stakes(&mut self) -> Result<Stakes, Self::Error>;
 
     #[stream]
-    async fn head_subscribe(&mut self) -> Result<BoxStream<'static, Blake2bHash>, Self::Error>;
+    async fn head_subscribe(&mut self) -> Result<BoxStream<'static, BlockStream>, Self::Error>;
 
     async fn get_account(&mut self, account: Address) -> Result<Account, Self::Error>;
 }

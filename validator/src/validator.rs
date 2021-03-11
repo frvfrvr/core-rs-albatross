@@ -251,9 +251,9 @@ impl<TNetwork: Network, TValidatorNetwork: ValidatorNetwork>
 
     fn on_blockchain_event(&mut self, event: BlockchainEvent) {
         match event {
-            BlockchainEvent::Extended(ref hash) => self.on_blockchain_extended(hash),
-            BlockchainEvent::Finalized(ref hash) => self.on_blockchain_extended(hash),
-            BlockchainEvent::EpochFinalized(ref hash) => {
+            BlockchainEvent::Extended(ref hash, _) => self.on_blockchain_extended(hash),
+            BlockchainEvent::Finalized(ref hash, _) => self.on_blockchain_extended(hash),
+            BlockchainEvent::EpochFinalized(ref hash, _) => {
                 self.on_blockchain_extended(hash);
                 self.init_epoch()
             }

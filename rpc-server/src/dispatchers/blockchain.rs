@@ -9,7 +9,7 @@ use nimiq_hash::Blake2bHash;
 use nimiq_keys::Address;
 use nimiq_primitives::policy;
 use nimiq_rpc_interface::{
-    blockchain::BlockchainInterface,
+    blockchain::{BlockStream, BlockchainInterface},
     types::{Block, OrLatest, SlashedSlots, Slot, Stake, Stakes, Validator},
 };
 
@@ -165,16 +165,16 @@ impl BlockchainInterface for BlockchainDispatcher {
     }
 
     #[stream]
-    async fn head_subscribe(&mut self) -> Result<BoxStream<'static, Blake2bHash>, Error> {
+    async fn head_subscribe(&mut self) -> Result<BoxStream<'static, BlockStream>, Error> {
         Ok(self
             .blockchain
             .notifier
             .write()
             .as_stream()
             .map(|event| match event {
-                BlockchainEvent::Extended(hash) => hash,
-                BlockchainEvent::Finalized(hash) => hash,
-                BlockchainEvent::EpochFinalized(hash) => hash,
+                BlockchainEvent::Extended(hash, height) => BlockStream { hash, height },
+                BlockchainEvent::Finalized(hash, height) => BlockStream { hash, height },
+                BlockchainEvent::EpochFinalized(hash, height) => BlockStream { hash, height },
                 BlockchainEvent::Rebranched(_, new_branch) => {
                     new_branch.into_iter().last().unwrap().0
                 }

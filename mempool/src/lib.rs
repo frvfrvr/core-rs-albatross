@@ -470,9 +470,9 @@ impl Mempool {
 
     fn on_blockchain_event(&self, event: &BlockchainEvent) {
         match event {
-            BlockchainEvent::Extended(_)
-            | BlockchainEvent::Finalized(_)
-            | BlockchainEvent::EpochFinalized(_) => self.evict_transactions(),
+            BlockchainEvent::Extended(..)
+            | BlockchainEvent::Finalized(..)
+            | BlockchainEvent::EpochFinalized(..) => self.evict_transactions(),
             BlockchainEvent::Rebranched(reverted_blocks, _) => {
                 self.restore_transactions(reverted_blocks);
                 self.evict_transactions();

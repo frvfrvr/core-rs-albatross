@@ -230,7 +230,8 @@ impl Blockchain {
         );
         self.chain_store.set_head(&mut txn, &block_hash);
 
-        let is_election_block = policy::is_election_block_at(self.block_number() + 1);
+        let block_number = self.block_number() + 1;
+        let is_election_block = policy::is_election_block_at(block_number);
 
         // Acquire write lock & commit changes.
         let mut state = self.state.write();
@@ -265,16 +266,16 @@ impl Blockchain {
             if is_election_block {
                 self.notifier
                     .read()
-                    .notify(BlockchainEvent::EpochFinalized(block_hash));
+                    .notify(BlockchainEvent::EpochFinalized(block_hash, block_number));
             } else {
                 self.notifier
                     .read()
-                    .notify(BlockchainEvent::Finalized(block_hash));
+                    .notify(BlockchainEvent::Finalized(block_hash, block_number));
             }
         } else {
             self.notifier
                 .read()
-                .notify(BlockchainEvent::Extended(block_hash));
+                .notify(BlockchainEvent::Extended(block_hash, block_number));
         }
 
         Ok(PushResult::Extended)

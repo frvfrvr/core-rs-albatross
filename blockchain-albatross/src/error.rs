@@ -28,10 +28,10 @@ pub enum SlashPushError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockchainEvent {
-    Extended(Blake2bHash),
+    Extended(Blake2bHash, u32),
     Rebranched(Vec<(Blake2bHash, Block)>, Vec<(Blake2bHash, Block)>),
-    Finalized(Blake2bHash),
-    EpochFinalized(Blake2bHash),
+    Finalized(Blake2bHash, u32),
+    EpochFinalized(Blake2bHash, u32),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
