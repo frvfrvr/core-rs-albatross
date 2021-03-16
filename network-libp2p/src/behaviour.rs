@@ -26,7 +26,7 @@ use crate::{
         handler::{HandlerError as LimitError, HandlerInEvent as LimitAction},
     },*/
     message::{behaviour::MessageBehaviour, handler::HandlerError as MessageError, peer::Peer},
-    network::Config,
+    Config,
 };
 
 pub type NimiqNetworkBehaviourError = EitherError<

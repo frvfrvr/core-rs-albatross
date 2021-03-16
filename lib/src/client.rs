@@ -110,7 +110,7 @@ impl ClientInner {
             log::debug!("Dialing seed: {:?}", seed);
             network.dial_address(seed.address.clone()).await?;
         }
-        network.wait_connected().await;
+        //network.wait_connected().await;
 
         // Load validator key (before we give away ownership of the storage config)
         #[cfg(feature = "validator")]
