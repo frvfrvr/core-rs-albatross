@@ -58,10 +58,12 @@ impl ConnectionPoolBehaviour {
             &self.connected_peers
         );
         if self.pending_connections.len() == 0 {
-            self.pending_connections = self
-                .peer_contact_book
-                .read()
-                .get_next_connections(4 - self.connected_peers.len(), &self.connected_peers);
+            if self.connected_peers.len() < 7usize {
+                self.pending_connections = self
+                    .peer_contact_book
+                    .read()
+                    .get_next_connections(7 - self.connected_peers.len(), &self.connected_peers);
+            }
         }
     }
 }
