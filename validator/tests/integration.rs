@@ -5,7 +5,7 @@ use log::LevelFilter::{Debug, Info};
 use rand::prelude::StdRng;
 use rand::SeedableRng;
 
-use nimiq_blockchain_albatross::{AbstractBlockchain, Blockchain};
+use nimiq_blockchain_albatross::{AbstractBlockchain, Blockchain, BlockchainEvent};
 use nimiq_bls::KeyPair;
 use nimiq_build_tools::genesis::{GenesisBuilder, GenesisInfo};
 use nimiq_consensus_albatross::sync::history::HistorySync;
@@ -23,6 +23,10 @@ use nimiq_primitives::networks::NetworkId;
 use nimiq_utils::time::OffsetTime;
 use nimiq_validator::validator::Validator as AbstractValidator;
 use nimiq_validator_network::network_impl::ValidatorNetworkImpl;
+use tokio::time::Duration;
+use tokio::time;
+use tokio::sync::mpsc::UnboundedReceiver;
+use futures::stream::Next;
 
 type Consensus = AbstractConsensus<Network>;
 type Validator = AbstractValidator<Network, ValidatorNetworkImpl<Network>>;
@@ -148,7 +152,11 @@ async fn four_validators_can_create_an_epoch() {
 
     let events = blockchain.notifier.write().as_stream();
 
-    events.take(130).for_each(|_| future::ready(())).await;
+    time::timeout(
+        Duration::from_secs(120),
+        events.take(130).for_each(|_| future::ready(()))
+    )
+    .await.unwrap();
 
     assert!(blockchain.block_number() >= 130);
     assert_eq!(blockchain.view_number(), 0);
