@@ -152,12 +152,13 @@ async fn four_validators_can_create_an_epoch() {
 
     let events = blockchain.notifier.write().as_stream();
 
-    time::timeout(
+    let is_e = time::timeout(
         Duration::from_secs(120),
         events.take(130).for_each(|_| future::ready(()))
     )
-    .await.unwrap();
+    .await.is_err();
 
     assert!(blockchain.block_number() >= 130);
     assert_eq!(blockchain.view_number(), 0);
+    assert!(!is_e);
 }
