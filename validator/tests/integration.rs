@@ -46,7 +46,7 @@ async fn consensus(peer_id: u64, genesis_info: GenesisInfo) -> Consensus {
             genesis_info.block,
             genesis_info.accounts,
         )
-        .unwrap(),
+            .unwrap(),
     );
     let mempool = Mempool::new(Arc::clone(&blockchain), MempoolConfig::default());
 
@@ -154,9 +154,9 @@ async fn four_validators_can_create_an_epoch() {
 
     let is_e = time::timeout(
         Duration::from_secs(120),
-        events.take(130).for_each(|_| future::ready(()))
+        events.take(130).for_each(|_| future::ready(())),
     )
-    .await.is_err();
+        .await.is_err();
 
     assert!(blockchain.block_number() >= 130);
     assert_eq!(blockchain.view_number(), 0);
