@@ -54,5 +54,6 @@ LABEL \
   org.opencontainers.image.title="Nimiq core-rs-albatross" \
   org.opencontainers.image.description="Rust implementation of the Nimiq Blockchain Core Albatross Branch (Buildkit Ubuntu image)" \
   org.opencontainers.image.url="https://github.com/nimiq/core-rs-albatross" \
+  org.opencontainers.image.source="https://github.com/nimiq/core-rs-albatross" \
   org.opencontainers.image.vendor="Nimiq Foundation" \
   org.opencontainers.image.licenses="Apache-2.0"

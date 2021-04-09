@@ -21,6 +21,8 @@ function optional () {
     local var=${!2}
     if [[ ! -z "$var" ]]; then
         entry "$1" "$var" "$3"
+    elif [[ ! -z "$4" ]]; then
+        entry "$1" "$4" "$3"
     fi
 }
 
@@ -72,7 +74,8 @@ optional validator_key VALIDATOR_KEY string
 
 if [[ "$RPC_ENABLED" == "true" ]]; then
     echo '[rpc-server]'
-    entry bind 0.0.0.0 string
+    optional bind RPC_BIND string 0.0.0.0
+    optional port RPC_PORT number
     optional username RPC_USERNAME string
     optional password RPC_PASSWORD string
 fi
